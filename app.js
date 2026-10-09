@@ -105,6 +105,10 @@ function history(exId) {
   db.sessions.forEach(s => s.entries.forEach(e => { if (e.exerciseId === exId) out.push({ date: s.date, w: e.eff.w, r: e.eff.r, tech: e.eff.tech }); }));
   return out;
 }
+function exById(id) {
+  for (const r of db.routines) { const x = r.exercises.find(e => e.id === id); if (x) return x; }
+  return null;
+}
 function findExName(id) {
   for (const r of db.routines) { const x = r.exercises.find(e => e.id === id); if (x) return x.name; }
   const l = lastEntry(id); return l ? l.name : 'Ejercicio';
@@ -126,7 +130,7 @@ function startTraining(rid) {
     entries: r.exercises.map(ex => {
       const last = lastEntry(ex.id);
       const ew = last ? last.eff.w : 0;
-      const er = last ? last.eff.r : 8;
+      const er = last ? last.eff.r : (ex.repMin || 8);
       const warm = [];
       for (let k = 0; k < (ex.warmups || 1); k++) {
         const lw = last && last.warm && last.warm[k];
@@ -257,8 +261,12 @@ function vTrain() {
   const c = db.current;
   if (!c) { ui.view = 'home'; return vHome(); }
   const e = cur(), n = c.entries.length, last = lastEntry(e.exerciseId), cmp = compare(e.eff, last);
+  const ex = exById(e.exerciseId) || {};
+  const range = ex.repMin && ex.repMax ? `${ex.repMin}–${ex.repMax} reps` : ex.repMin ? `mín. ${ex.repMin} reps` : ex.repMax ? `máx. ${ex.repMax} reps` : '';
+  const topHit = ex.repMax && e.eff.r >= ex.repMax;
   let b = `<div class="segs" style="grid-template-columns:repeat(${n},1fr)">${c.entries.map((x, i) => `<i class="${i === c.idx ? 'cur' : x.eff.done ? 'ok' : ''}"></i>`).join('')}</div>
   <h2 class="exname">${esc(e.name)}</h2>
+  ${range || ex.notes ? `<div class="card notes">${range ? `<span class="eyebrow hl">Objetivo · ${range}</span>` : ''}${ex.notes ? `<span class="note-t">${esc(ex.notes)}</span>` : ''}</div>` : ''}
   <div class="card row-sb" style="flex-direction:row"><div class="col"><span class="eyebrow">La vez pasada${last ? ' · ' + fdate(last.date) : ''}</span><span class="num md">${last ? `${fmt(last.eff.w)} kg × ${last.eff.r} reps` : 'Sin registro'}</span></div><span class="muted sm">${last && last.eff.tech && last.eff.tech !== 'Normal' ? esc(last.eff.tech) : 'serie al fallo'}</span></div>
   <span class="eyebrow mt">Calentamiento</span>`;
   b += e.warm.map((w, k) => `<div class="card set ${w.done ? 'is-done' : ''}"><div class="row-sb"><span class="lbl">Calentamiento ${k + 1}</span><button class="check ${w.done ? 'on' : ''}" data-a="toggleWarm" data-k="${k}" aria-label="Marcar calentamiento ${k + 1}">${ICON.check}</button></div><div class="grid2">${stepper(k, 'w', w.w, 'kg')}${stepper(k, 'r', w.r, 'reps')}</div></div>`).join('');
@@ -266,6 +274,7 @@ function vTrain() {
   b += `<div class="card eff ${e.eff.done ? 'is-done' : ''}"><span class="eff-t">Serie efectiva · al fallo</span>
     ${stepper('e', 'w', e.eff.w, 'kg', true)}${stepper('e', 'r', e.eff.r, 'reps al fallo', true)}
     <div class="cmp ${cmp.cls}">${cmp.text}</div>
+    ${topHit ? `<div class="cmp up">Llegaste al tope de ${ex.repMax} reps: la próxima vez sube el peso</div>` : ''}
     <span class="eyebrow">Técnica de intensidad</span>
     <div class="chips">${TECHS.map(t => `<button class="chip ${e.eff.tech === t ? 'on' : ''}" data-a="tech" data-t="${t}">${t}</button>`).join('')}</div>
     <button class="btn ${e.eff.done ? '' : 'acc'} lg" data-a="toggleEff">${e.eff.done ? 'Serie registrada · tocar para editar' : 'Registrar serie al fallo'}</button></div>
@@ -291,6 +300,11 @@ function vPlan() {
   <span class="eyebrow mt">Ejercicios, en orden</span>`;
   b += r.exercises.length ? r.exercises.map((x, i) => `<div class="card">
     <div class="row"><span class="badge">${i + 1}</span><input class="inp" value="${esc(x.name)}" data-f="exname" data-i="${i}" aria-label="Nombre del ejercicio ${i + 1}"></div>
+    <div class="row"><span class="muted sm" style="flex:1">Reps objetivo</span>
+      <input class="inp mini" type="number" inputmode="numeric" min="0" placeholder="mín" value="${x.repMin || ''}" data-f="repMin" data-i="${i}" aria-label="Reps mínimas">
+      <span class="muted">a</span>
+      <input class="inp mini" type="number" inputmode="numeric" min="0" placeholder="máx" value="${x.repMax || ''}" data-f="repMax" data-i="${i}" aria-label="Reps máximas"></div>
+    <textarea class="inp ta" rows="2" placeholder="Notas: enlazar con…, al fallo, cuidar la zona lumbar…" data-f="exnotes" data-i="${i}" aria-label="Notas del ejercicio ${i + 1}">${esc(x.notes || '')}</textarea>
     <div class="row-sb"><div class="seg"><span class="muted sm">Calent.</span>
       <button class="chip ${x.warmups === 1 ? 'on' : ''}" data-a="warmups" data-i="${i}" data-n="1">1</button>
       <button class="chip ${x.warmups === 2 ? 'on' : ''}" data-a="warmups" data-i="${i}" data-n="2">2</button></div>
@@ -519,6 +533,8 @@ document.addEventListener('change', ev => {
   }
   if (f === 'rname') { routine(ui.planId).name = t.value.trim() || 'Rutina'; save(); return; }
   if (f === 'exname') { const v = t.value.trim(); if (v) { routine(ui.planId).exercises[+t.dataset.i].name = v; save(); } return; }
+  if (f === 'exnotes') { routine(ui.planId).exercises[+t.dataset.i].notes = t.value.trim(); save(); return; }
+  if (f === 'repMin' || f === 'repMax') { const v = Math.round(num(t.value, 0)); routine(ui.planId).exercises[+t.dataset.i][f] = v > 0 ? v : null; save(); return; }
   if (f === 'pstart' && t.value) { ui.form.start = t.value; rerender(); }
 });
 document.addEventListener('input', ev => { if (ev.target.dataset.f === 'pname') ui.form.name = ev.target.value; });

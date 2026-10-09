@@ -92,6 +92,10 @@ svg { flex-shrink: 0; }
 
 .inp { width: 100%; height: 48px; border-radius: 12px; border: 1.5px solid var(--bd); background: var(--card2); padding: 0 14px; font-size: 17px; font-weight: 600; min-width: 0; color-scheme: dark; }
 .inp:focus { outline: none; border-color: var(--acc); }
+.inp.mini { width: 72px; flex: none; text-align: center; padding: 0 6px; }
+.inp.ta { height: auto; min-height: 64px; padding: 10px 14px; font-size: 15px; font-weight: 500; line-height: 1.35; resize: vertical; font-family: inherit; }
+.notes { gap: 6px; background: var(--warm-bg); border: 1px solid var(--warm-bd); }
+.note-t { font-size: 15px; line-height: 1.4; white-space: pre-line; color: #F1D9C8; }
 .badge { width: 28px; height: 28px; flex-shrink: 0; border-radius: 14px; background: var(--card2); font-size: 13px; font-weight: 700; display: flex; align-items: center; justify-content: center; }
 .seg { display: flex; align-items: center; gap: 6px; }
 .seg .chip { width: 44px; padding: 0; }
