@@ -36,6 +36,14 @@ const fdateY = iso => fdate(iso) + ' ' + parseISO(iso).getFullYear();
 const addDays = (iso, n) => { const d = parseISO(iso); d.setDate(d.getDate() + n); return isoOf(d); };
 const daysBetween = (a, b) => Math.round((parseISO(b) - parseISO(a)) / 86400000);
 const $ = s => document.querySelector(s);
+const LB = 0.45359237;
+const conv = (w, from, to) => from === to ? w : from === 'lb' ? w * LB : w / LB;
+const other = u => u === 'lb' ? 'kg' : 'lb';
+const unitOf = x => (x && x.unit) || 'kg';
+const stepFor = u => u === 'lb' ? (db.settings.stepLb || 5) : db.settings.step;
+const wLabel = (w, u) => w > 0 ? `${u} · ≈ ${fmt(r1(conv(w, u, other(u))))} ${other(u)}` : u;
+// Último registro de la serie efectiva convertido a la unidad pedida
+const lastEffIn = (l, u) => ({ w: r1(conv(l.eff.w, unitOf(l), u)), r: l.eff.r });
 
 /* ---------- datos ---------- */
 function seed() {
@@ -47,13 +55,13 @@ function seed() {
     v: 1,
     programs: [{ id: uid(), name: '1er bimestre', weeks: 8, cycles: 8, days: 3, start: todayISO(), routineIds: routines.map(r => r.id), active: true }],
     routines, sessions: [], current: null,
-    settings: { step: 2.5, restWarm: 60, restEff: 120 }
+    settings: { step: 2.5, stepLb: 5, restWarm: 60, restEff: 120 }
   };
 }
 function load() {
   try {
     const raw = localStorage.getItem(KEY);
-    if (raw) { const d = JSON.parse(raw); if (d && d.v === 1) { d.settings = Object.assign({ step: 2.5, restWarm: 60, restEff: 120 }, d.settings); return d; } }
+    if (raw) { const d = JSON.parse(raw); if (d && d.v === 1) { d.settings = Object.assign({ step: 2.5, stepLb: 5, restWarm: 60, restEff: 120 }, d.settings); return d; } }
   } catch (e) { /* sin acceso a almacenamiento */ }
   return seed();
 }
@@ -102,7 +110,7 @@ function lastEntry(exId) {
 }
 function history(exId) {
   const out = [];
-  db.sessions.forEach(s => s.entries.forEach(e => { if (e.exerciseId === exId) out.push({ date: s.date, w: e.eff.w, r: e.eff.r, tech: e.eff.tech }); }));
+  db.sessions.forEach(s => s.entries.forEach(e => { if (e.exerciseId === exId) out.push({ date: s.date, w: e.eff.w, r: e.eff.r, tech: e.eff.tech, unit: unitOf(e) }); }));
   return out;
 }
 function exById(id) {
@@ -124,19 +132,20 @@ function startTraining(rid) {
   const r = routine(rid);
   if (!r || !r.exercises.length) { toast('Primero agrega ejercicios a esta rutina'); ui.planId = rid; go('plan'); return; }
   const p = activeProgram();
-  const step = db.settings.step;
   db.current = {
     routineId: r.id, routineName: r.name, programId: p ? p.id : null, idx: 0, startedAt: Date.now(),
     entries: r.exercises.map(ex => {
       const last = lastEntry(ex.id);
-      const ew = last ? last.eff.w : 0;
+      const u = unitOf(ex), lu = last ? unitOf(last) : u, step = stepFor(u);
+      const cw = w => r1(conv(w, lu, u));
+      const ew = last ? cw(last.eff.w) : 0;
       const er = last ? last.eff.r : (ex.repMin || 8);
       const warm = [];
       for (let k = 0; k < (ex.warmups || 1); k++) {
         const lw = last && last.warm && last.warm[k];
-        warm.push(lw ? { w: lw.w, r: lw.r, done: false } : { w: roundTo(ew * (k === 0 ? 0.5 : 0.75), step), r: k === 0 ? 12 : 6, done: false });
+        warm.push(lw ? { w: cw(lw.w), r: lw.r, done: false } : { w: roundTo(ew * (k === 0 ? 0.5 : 0.75), step), r: k === 0 ? 12 : 6, done: false });
       }
-      return { exerciseId: ex.id, name: ex.name, warm, eff: { w: ew, r: er, done: false, tech: 'Normal' } };
+      return { exerciseId: ex.id, name: ex.name, unit: u, warm, eff: { w: ew, r: er, done: false, tech: 'Normal' } };
     })
   };
   save(); go('train');
@@ -148,21 +157,21 @@ function finishTraining() {
     if (!confirm('No registraste ninguna serie efectiva. ¿Terminar sin guardar?')) return;
   } else {
     const prs = [], firsts = [];
-    done.forEach(e => { const l = lastEntry(e.exerciseId); if (!l) firsts.push(e.name); else if (beats(e.eff, l.eff)) prs.push(e.name); });
+    done.forEach(e => { const l = lastEntry(e.exerciseId); if (!l) firsts.push(e.name); else if (beats(e.eff, lastEffIn(l, unitOf(e)))) prs.push(e.name); });
     db.sessions.push({
       id: uid(), date: todayISO(), at: Date.now(), programId: c.programId, routineId: c.routineId, routineName: c.routineName,
-      entries: done.map(e => ({ exerciseId: e.exerciseId, name: e.name, warm: e.warm.map(w => ({ w: w.w, r: w.r })), eff: { w: e.eff.w, r: e.eff.r, tech: e.eff.tech } }))
+      entries: done.map(e => ({ exerciseId: e.exerciseId, name: e.name, unit: unitOf(e), warm: e.warm.map(w => ({ w: w.w, r: w.r })), eff: { w: e.eff.w, r: e.eff.r, tech: e.eff.tech } }))
     });
     ui.summary = { routineName: c.routineName, total: done.length, of: c.entries.length, prs, firsts };
   }
   db.current = null; stopRest(); save();
   go(done.length ? 'summary' : 'home');
 }
-function compare(eff, last) {
+function compare(eff, last, u) {
   if (!last) return { cls: '', text: 'Primera vez: esta serie será tu referencia' };
-  const l = last.eff;
+  const l = lastEffIn(last, u);
   if (beats(eff, l)) {
-    const d = eff.w > l.w ? '+' + fmt(eff.w - l.w) + ' kg' : '+' + (eff.r - l.r) + (eff.r - l.r === 1 ? ' rep' : ' reps');
+    const d = eff.w > l.w ? '+' + fmt(r1(eff.w - l.w)) + ' ' + u : '+' + (eff.r - l.r) + (eff.r - l.r === 1 ? ' rep' : ' reps');
     return { cls: 'up', text: d + ' vs. la vez pasada · progresaste' };
   }
   if (eff.w === l.w && eff.r === l.r) return { cls: '', text: 'Igual que la vez pasada · busca 1 rep más' };
@@ -260,19 +269,19 @@ function stepper(set, f, val, unit, big) {
 function vTrain() {
   const c = db.current;
   if (!c) { ui.view = 'home'; return vHome(); }
-  const e = cur(), n = c.entries.length, last = lastEntry(e.exerciseId), cmp = compare(e.eff, last);
+  const e = cur(), n = c.entries.length, last = lastEntry(e.exerciseId), u = unitOf(e), cmp = compare(e.eff, last, u);
   const ex = exById(e.exerciseId) || {};
   const range = ex.repMin && ex.repMax ? `${ex.repMin}–${ex.repMax} reps` : ex.repMin ? `mín. ${ex.repMin} reps` : ex.repMax ? `máx. ${ex.repMax} reps` : '';
   const topHit = ex.repMax && e.eff.r >= ex.repMax;
   let b = `<div class="segs" style="grid-template-columns:repeat(${n},1fr)">${c.entries.map((x, i) => `<i class="${i === c.idx ? 'cur' : x.eff.done ? 'ok' : ''}"></i>`).join('')}</div>
   <h2 class="exname">${esc(e.name)}</h2>
   ${range || ex.notes ? `<div class="card notes">${range ? `<span class="eyebrow hl">Objetivo · ${range}</span>` : ''}${ex.notes ? `<span class="note-t">${esc(ex.notes)}</span>` : ''}</div>` : ''}
-  <div class="card row-sb" style="flex-direction:row"><div class="col"><span class="eyebrow">La vez pasada${last ? ' · ' + fdate(last.date) : ''}</span><span class="num md">${last ? `${fmt(last.eff.w)} kg × ${last.eff.r} reps` : 'Sin registro'}</span></div><span class="muted sm">${last && last.eff.tech && last.eff.tech !== 'Normal' ? esc(last.eff.tech) : 'serie al fallo'}</span></div>
+  <div class="card row-sb" style="flex-direction:row"><div class="col"><span class="eyebrow">La vez pasada${last ? ' · ' + fdate(last.date) : ''}</span><span class="num md">${last ? `${fmt(last.eff.w)} ${unitOf(last)} × ${last.eff.r} reps` : 'Sin registro'}</span>${last && last.eff.w > 0 ? `<span class="muted sm">≈ ${fmt(r1(conv(last.eff.w, unitOf(last), other(unitOf(last)))))} ${other(unitOf(last))}</span>` : ''}</div><span class="muted sm">${last && last.eff.tech && last.eff.tech !== 'Normal' ? esc(last.eff.tech) : 'serie al fallo'}</span></div>
   <span class="eyebrow mt">Calentamiento</span>`;
-  b += e.warm.map((w, k) => `<div class="card set ${w.done ? 'is-done' : ''}"><div class="row-sb"><span class="lbl">Calentamiento ${k + 1}</span><button class="check ${w.done ? 'on' : ''}" data-a="toggleWarm" data-k="${k}" aria-label="Marcar calentamiento ${k + 1}">${ICON.check}</button></div><div class="grid2">${stepper(k, 'w', w.w, 'kg')}${stepper(k, 'r', w.r, 'reps')}</div></div>`).join('');
+  b += e.warm.map((w, k) => `<div class="card set ${w.done ? 'is-done' : ''}"><div class="row-sb"><span class="lbl">Calentamiento ${k + 1}</span><button class="check ${w.done ? 'on' : ''}" data-a="toggleWarm" data-k="${k}" aria-label="Marcar calentamiento ${k + 1}">${ICON.check}</button></div><div class="grid2">${stepper(k, 'w', w.w, wLabel(w.w, u))}${stepper(k, 'r', w.r, 'reps')}</div></div>`).join('');
   b += e.warm.length < 2 ? `<button class="btn dashed" data-a="addWarm">+ Agregar 2.º calentamiento</button>` : `<button class="btn text" data-a="delWarm">Quitar 2.º calentamiento</button>`;
   b += `<div class="card eff ${e.eff.done ? 'is-done' : ''}"><span class="eff-t">Serie efectiva · al fallo</span>
-    ${stepper('e', 'w', e.eff.w, 'kg', true)}${stepper('e', 'r', e.eff.r, 'reps al fallo', true)}
+    ${stepper('e', 'w', e.eff.w, wLabel(e.eff.w, u), true)}${stepper('e', 'r', e.eff.r, 'reps al fallo', true)}
     <div class="cmp ${cmp.cls}">${cmp.text}</div>
     ${topHit ? `<div class="cmp up">Llegaste al tope de ${ex.repMax} reps: la próxima vez sube el peso</div>` : ''}
     <span class="eyebrow">Técnica de intensidad</span>
@@ -305,6 +314,9 @@ function vPlan() {
       <span class="muted">a</span>
       <input class="inp mini" type="number" inputmode="numeric" min="0" placeholder="máx" value="${x.repMax || ''}" data-f="repMax" data-i="${i}" aria-label="Reps máximas"></div>
     <textarea class="inp ta" rows="2" placeholder="Notas: enlazar con…, al fallo, cuidar la zona lumbar…" data-f="exnotes" data-i="${i}" aria-label="Notas del ejercicio ${i + 1}">${esc(x.notes || '')}</textarea>
+    <div class="seg"><span class="muted sm" style="flex:1">Unidad de peso</span>
+      <button class="chip ${unitOf(x) === 'kg' ? 'on' : ''}" data-a="unit" data-i="${i}" data-u="kg">kg</button>
+      <button class="chip ${unitOf(x) === 'lb' ? 'on' : ''}" data-a="unit" data-i="${i}" data-u="lb">lb</button></div>
     <div class="row-sb"><div class="seg"><span class="muted sm">Calent.</span>
       <button class="chip ${x.warmups === 1 ? 'on' : ''}" data-a="warmups" data-i="${i}" data-n="1">1</button>
       <button class="chip ${x.warmups === 2 ? 'on' : ''}" data-a="warmups" data-i="${i}" data-n="2">2</button></div>
@@ -369,31 +381,32 @@ function vProgress() {
   if (!db.sessions.length) b += `<div class="card muted">Aquí verás tu progresión cuando registres tu primer entrenamiento.</div>`;
   b += db.routines.filter(r => r.exercises.length).map(r => `<span class="eyebrow mt">${esc(r.name)}</span>` + r.exercises.map(x => {
     const h = history(x.id), l = h[h.length - 1];
-    return `<button class="card rrow" data-a="exHist" data-id="${x.id}"><div class="col"><span class="rname" style="font-size:16px">${esc(x.name)}</span><span class="muted sm">${h.length ? `${h.length} ${h.length === 1 ? 'sesión' : 'sesiones'} · último ${fmt(l.w)} kg × ${l.r}` : 'Sin registros'}</span></div>${ICON.chev}</button>`;
+    return `<button class="card rrow" data-a="exHist" data-id="${x.id}"><div class="col"><span class="rname" style="font-size:16px">${esc(x.name)}</span><span class="muted sm">${h.length ? `${h.length} ${h.length === 1 ? 'sesión' : 'sesiones'} · último ${fmt(l.w)} ${l.unit} × ${l.r}` : 'Sin registros'}</span></div>${ICON.chev}</button>`;
   }).join('')).join('');
   return screen({ title: 'Progreso', sub: 'Serie efectiva', body: b, nav: 'progress' });
 }
 function vExercise() {
-  const h = history(ui.exId);
+  const h = history(ui.exId), cu = unitOf(exById(ui.exId));
   let b = '';
   if (h.length >= 2) {
-    const W = 320, H = 150, P = 24, ws = h.map(x => x.w), mn = Math.min.apply(null, ws), mx = Math.max.apply(null, ws), rg = mx - mn || 1;
-    const pts = h.map((x, i) => [P + i * (W - 2 * P) / (h.length - 1), H - P - (x.w - mn) / rg * (H - 2 * P)].map(v => Math.round(v * 10) / 10));
-    b += `<div class="card"><span class="eyebrow">Peso de la serie efectiva</span><svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Progresión de peso, de ${fmt(h[0].w)} a ${fmt(h[h.length - 1].w)} kg">
+    const W = 320, H = 150, P = 24, ws = h.map(x => r1(conv(x.w, x.unit, cu))), mn = Math.min.apply(null, ws), mx = Math.max.apply(null, ws), rg = mx - mn || 1;
+    const pts = ws.map((w, i) => [P + i * (W - 2 * P) / (h.length - 1), H - P - (w - mn) / rg * (H - 2 * P)].map(v => Math.round(v * 10) / 10));
+    b += `<div class="card"><span class="eyebrow">Peso de la serie efectiva</span><svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Progresión de peso, de ${fmt(ws[0])} a ${fmt(ws[ws.length - 1])} ${cu}">
       <line x1="${P}" y1="${H - P}" x2="${W - P}" y2="${H - P}" stroke="#2E2F34"/>
       <polyline fill="none" stroke="#FF6A1A" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" points="${pts.map(p => p.join(',')).join(' ')}"/>
       ${pts.map(p => `<circle cx="${p[0]}" cy="${p[1]}" r="4" fill="#FF6A1A"/>`).join('')}
-      <text x="${W - P}" y="14" fill="#A3A3A8" font-size="12" text-anchor="end">máx ${fmt(mx)} kg</text></svg></div>`;
+      <text x="${W - P}" y="14" fill="#A3A3A8" font-size="12" text-anchor="end">máx ${fmt(mx)} ${cu}</text></svg></div>`;
   }
   if (!h.length) b += `<div class="card muted">Sin registros todavía.</div>`;
-  else b += `<div class="card" style="gap:0">${h.map((x, i) => ({ x, up: i > 0 && beats(x, h[i - 1]) })).reverse().map(({ x, up }) => `<div class="hist"><span class="muted">${fdateY(x.date)}</span><span class="row"><span class="num md">${fmt(x.w)} kg × ${x.r}</span>${up ? '<span class="tag">↑</span>' : ''}</span></div>`).join('')}</div>`;
+  else b += `<div class="card" style="gap:0">${h.map((x, i) => ({ x, up: i > 0 && beats({ w: r1(conv(x.w, x.unit, cu)), r: x.r }, { w: r1(conv(h[i - 1].w, h[i - 1].unit, cu)), r: h[i - 1].r }) })).reverse().map(({ x, up }) => `<div class="hist"><span class="muted">${fdateY(x.date)}</span><span class="row"><span class="num md">${fmt(x.w)} ${x.unit} × ${x.r}</span>${up ? '<span class="tag">↑</span>' : ''}</span></div>`).join('')}</div>`;
   return screen({ title: findExName(ui.exId), sub: 'Historial', back: 'progress', backA: 'exBack', body: b, nav: 'progress' });
 }
 
 function vSettings() {
   const s = db.settings;
   const chips = (k, opts, unit) => `<div class="chips">${opts.map(n => `<button class="chip ${s[k] === n ? 'on' : ''}" data-a="setNum" data-k="${k}" data-n="${n}">${n}${unit}</button>`).join('')}</div>`;
-  const b = `<div class="card"><span class="eyebrow">Incremento de peso con −/+</span>${chips('step', [1, 2.5, 5], ' kg')}</div>
+  const b = `<div class="card"><span class="eyebrow">Incremento con −/+ en kg</span>${chips('step', [1, 2.5, 5], ' kg')}
+    <span class="eyebrow">Incremento con −/+ en lb</span>${chips('stepLb', [2.5, 5, 10], ' lb')}</div>
   <div class="card"><span class="eyebrow">Descanso después de calentamiento</span>${chips('restWarm', [45, 60, 90], ' s')}
     <span class="eyebrow">Descanso después de la serie efectiva</span>${chips('restEff', [90, 120, 180], ' s')}</div>
   <div class="card"><span class="eyebrow">Tus datos</span><span class="muted sm">Se guardan solo en este teléfono. Haz respaldo de vez en cuando.</span>
@@ -413,12 +426,12 @@ function download(text, type, name) {
 }
 function exportCsv() {
   if (!db.sessions.length) return toast('Todavía no hay entrenamientos registrados');
-  const rows = [['Fecha', 'Programa', 'Rutina', 'Ejercicio', 'Serie', 'Peso (kg)', 'Reps', 'Técnica']];
+  const rows = [['Fecha', 'Programa', 'Rutina', 'Ejercicio', 'Serie', 'Peso', 'Unidad', 'Reps', 'Técnica']];
   db.sessions.forEach(s => {
     const pn = (db.programs.find(p => p.id === s.programId) || {}).name || '';
     s.entries.forEach(e => {
-      (e.warm || []).forEach((w, k) => rows.push([s.date, pn, s.routineName, e.name, 'Calentamiento ' + (k + 1), w.w, w.r, '']));
-      rows.push([s.date, pn, s.routineName, e.name, 'Efectiva', e.eff.w, e.eff.r, e.eff.tech || '']);
+      (e.warm || []).forEach((w, k) => rows.push([s.date, pn, s.routineName, e.name, 'Calentamiento ' + (k + 1), w.w, unitOf(e), w.r, '']));
+      rows.push([s.date, pn, s.routineName, e.name, 'Efectiva', e.eff.w, unitOf(e), e.eff.r, e.eff.tech || '']);
     });
   });
   const csv = '﻿' + rows.map(r => r.map(c => { const v = String(c); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; }).join(',')).join('\r\n');
@@ -432,7 +445,7 @@ function importFile(file) {
       const d = JSON.parse(rd.result);
       if (!d || d.v !== 1 || !Array.isArray(d.routines) || !Array.isArray(d.sessions)) throw new Error('formato');
       if (!confirm('Esto reemplaza los datos de este teléfono con el respaldo. ¿Continuar?')) return;
-      db = d; db.settings = Object.assign({ step: 2.5, restWarm: 60, restEff: 120 }, db.settings);
+      db = d; db.settings = Object.assign({ step: 2.5, stepLb: 5, restWarm: 60, restEff: 120 }, db.settings);
       save(); toast('Respaldo restaurado'); go('home');
     } catch (e) { toast('Ese archivo no es un respaldo válido'); }
   };
@@ -460,11 +473,11 @@ const ACT = {
   newProgram: () => openProgram(true),
 
   step: d => {
-    const e = cur(), t = d.s === 'e' ? e.eff : e.warm[+d.s], st = d.f === 'w' ? db.settings.step : 1;
+    const e = cur(), t = d.s === 'e' ? e.eff : e.warm[+d.s], st = d.f === 'w' ? stepFor(unitOf(e)) : 1;
     t[d.f] = Math.max(0, Math.round((t[d.f] + st * +d.d) * 100) / 100); save(); rerender();
   },
   toggleWarm: d => { const w = cur().warm[+d.k]; w.done = !w.done; if (w.done) startRest(db.settings.restWarm); save(); rerender(); },
-  addWarm: () => { const e = cur(); e.warm.push({ w: roundTo(e.eff.w * 0.75, db.settings.step), r: 6, done: false }); save(); rerender(); },
+  addWarm: () => { const e = cur(); e.warm.push({ w: roundTo(e.eff.w * 0.75, stepFor(unitOf(e))), r: 6, done: false }); save(); rerender(); },
   delWarm: () => { cur().warm.length = 1; save(); rerender(); },
   tech: d => { cur().eff.tech = d.t; save(); rerender(); },
   toggleEff: () => { const e = cur(); e.eff.done = !e.eff.done; if (e.eff.done) startRest(db.settings.restEff); save(); rerender(); },
@@ -475,6 +488,7 @@ const ACT = {
   skipRest: () => { stopRest(); rerender(); },
 
   warmups: d => { routine(ui.planId).exercises[+d.i].warmups = +d.n; save(); rerender(); },
+  unit: d => { routine(ui.planId).exercises[+d.i].unit = d.u; save(); rerender(); },
   exMove: d => {
     const xs = routine(ui.planId).exercises, i = +d.i, j = i + +d.d;
     if (j < 0 || j >= xs.length) return;
