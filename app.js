@@ -1,5 +1,5 @@
 'use strict';
-/* Heavy Duty — app personal de registro de entrenamiento.
+/* HD (Heavy Duty) V5 — app personal de registro de entrenamiento.
    Estructura: Programa › Fases › Días › Ejercicios.
    Todo se guarda en este teléfono (localStorage). Respalda desde Ajustes. */
 
@@ -7,6 +7,8 @@ const KEY = 'hd.v1';
 const MESES = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
 const TECHS = ['Normal', 'Forzadas', 'Rest-pause', 'Negativas'];
 const PRESETS = ['Fase 1', 'Fase 2', 'Fase 3', 'Fase 4', 'Fase 5', 'Fase 6'];
+const APP_NAME = 'HD';
+const APP_VER = 'V5';
 const DEF_SETTINGS = { step: 2.5, stepLb: 5, restWarm: 60, restEff: 120 };
 
 const ICON = {
@@ -38,6 +40,9 @@ const fdateY = iso => fdate(iso) + ' ' + parseISO(iso).getFullYear();
 const addDays = (iso, n) => { const d = parseISO(iso); d.setDate(d.getDate() + n); return isoOf(d); };
 const daysBetween = (a, b) => Math.round((parseISO(b) - parseISO(a)) / 86400000);
 const $ = s => document.querySelector(s);
+// Clave para comparar nombres sin importar mayúsculas, acentos, espacios ni signos
+const normKey = s => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]/g, '');
+const normSearch = s => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
 const pad2 = n => String(n).padStart(2, '0');
 const fmtDur = sec => { const h = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60), s = sec % 60; return h ? `${h}:${pad2(m)}:${pad2(s)}` : `${m}:${pad2(s)}`; };
 const fmtMin = sec => Math.round(sec / 60) + ' min';
@@ -56,9 +61,10 @@ function seed() {
   const names = ['Hombro y bícep', 'Pecho y trícep', 'Pecho y hombro', 'Espalda y trícep', 'Pierna completa'];
   const hb = ['Press militar agarre amplio en máquina', 'Elevación lateral en polea baja', 'Jalón a la cara en polea con soga',
     'Curl de bíceps araña con mancuernas', 'Curl de bíceps con soga en polea baja', 'Curl drag con mancuernas'];
-  const routines = names.map((n, i) => ({ id: uid() + i, name: n, exercises: i === 0 ? hb.map((x, k) => ({ id: uid() + 'e' + k, name: x, warmups: 1 })) : [] }));
+  const exercises = hb.map((x, k) => ({ id: uid() + 'e' + k, name: x, unit: 'kg' }));
+  const routines = names.map((n, i) => ({ id: uid() + i, name: n, exercises: i === 0 ? exercises.map(x => ({ id: x.id, warmups: 1 })) : [] }));
   return {
-    v: 2, programName: 'Mi programa',
+    v: 3, programName: 'Mi programa', exercises,
     programs: [{ id: uid(), name: 'Fase 1', weeks: 8, cycles: 8, days: 3, start: todayISO(), routineIds: routines.map(r => r.id), state: 'active' }],
     routines, sessions: [], current: null, settings: Object.assign({}, DEF_SETTINGS)
   };
@@ -77,7 +83,29 @@ function migrate(d) {
     d.programName = d.programName || 'Mi programa';
     d.v = 2;
   }
-  if (d.v !== 2) return null;
+  if (d.v === 2) {
+    // v3: catálogo único de ejercicios; los días solo apuntan a ellos
+    const cat = [], byNorm = {}, remap = {};
+    const addCat = (id, name, unit) => {
+      const k = normKey(name);
+      if (byNorm[k]) { if (byNorm[k].id !== id) remap[id] = byNorm[k].id; return; }
+      const e = { id, name: name || 'Ejercicio', unit: unit || 'kg' };
+      cat.push(e); byNorm[k] = e;
+    };
+    d.routines.forEach(r => r.exercises.forEach(x => addCat(x.id, x.name, x.unit)));
+    d.sessions.forEach(s => s.entries.forEach(e => { if (!cat.some(c => c.id === e.exerciseId) && !remap[e.exerciseId]) addCat(e.exerciseId, e.name, e.unit); }));
+    d.routines.forEach(r => {
+      const seen = new Set();
+      r.exercises = r.exercises.map(x => { const id = remap[x.id] || x.id; return { id, warmups: x.warmups || 1, repMin: x.repMin || null, repMax: x.repMax || null, notes: x.notes || '' }; })
+        .filter(x => !seen.has(x.id) && seen.add(x.id));
+    });
+    d.sessions.forEach(s => s.entries.forEach(e => { if (remap[e.exerciseId]) e.exerciseId = remap[e.exerciseId]; }));
+    if (d.current) d.current.entries.forEach(e => { if (remap[e.exerciseId]) e.exerciseId = remap[e.exerciseId]; });
+    d.exercises = cat;
+    d.v = 3;
+  }
+  if (d.v !== 3) return null;
+  d.exercises = d.exercises || [];
   d.programs = d.programs || [];
   d.settings = Object.assign({}, DEF_SETTINGS, d.settings);
   return d;
@@ -147,11 +175,57 @@ function history(exId) {
   db.sessions.forEach(s => s.entries.forEach(e => { if (e.exerciseId === exId) out.push({ date: s.date, w: e.eff.w, r: e.eff.r, tech: e.eff.tech, unit: unitOf(e) }); }));
   return out;
 }
-function exById(id) {
+/* ---------- catálogo de ejercicios ---------- */
+const exMeta = id => db.exercises.find(e => e.id === id) || null;
+function findExName(id) { const m = exMeta(id); if (m) return m.name; const l = lastEntry(id); return l ? l.name : 'Ejercicio'; }
+const slotOf = (rid, id) => { const r = routine(rid); return r ? r.exercises.find(x => x.id === id) || null : null; };
+function anySlot(id) {
   for (const r of db.routines) { const x = r.exercises.find(e => e.id === id); if (x) return x; }
   return null;
 }
-function findExName(id) { const x = exById(id); if (x) return x.name; const l = lastEntry(id); return l ? l.name : 'Ejercicio'; }
+const sesTxt = n => n + (n === 1 ? ' sesión' : ' sesiones');
+const daysUsing = id => db.routines.filter(r => r.exercises.some(x => x.id === id));
+const sessionsCount = id => db.sessions.reduce((n, s) => n + (s.entries.some(e => e.exerciseId === id) ? 1 : 0), 0);
+function usageText(id) {
+  const ds = daysUsing(id), n = sessionsCount(id), l = lastEntry(id);
+  const parts = [ds.length ? 'en ' + ds.map(r => r.name).join(', ') : 'sin día'];
+  parts.push(n + (n === 1 ? ' sesión' : ' sesiones'));
+  if (l) parts.push(`último ${fmt(l.eff.w)} ${unitOf(l)} × ${l.eff.r}`);
+  return parts.join(' · ');
+}
+// Ejercicios con nombre muy parecido (posibles duplicados)
+function similarTo(id) {
+  const m = exMeta(id); if (!m) return [];
+  const k = normKey(m.name);
+  return db.exercises.filter(e => e.id !== id && k.length > 2 && (normKey(e.name) === k || normKey(e.name).includes(k) || k.includes(normKey(e.name))));
+}
+function duplicatePairs() {
+  const out = [], seen = new Set();
+  db.exercises.forEach(e => similarTo(e.id).forEach(o => { const key = [e.id, o.id].sort().join('|'); if (!seen.has(key)) { seen.add(key); out.push([e, o]); } }));
+  return out;
+}
+function mergeExercise(srcId, dstId) {
+  db.routines.forEach(r => {
+    const hasDst = r.exercises.some(x => x.id === dstId);
+    r.exercises = r.exercises.filter(x => !(x.id === srcId && hasDst)).map(x => x.id === srcId ? Object.assign(x, { id: dstId }) : x);
+  });
+  db.sessions.forEach(s => s.entries.forEach(e => { if (e.exerciseId === srcId) e.exerciseId = dstId; }));
+  if (db.current) db.current.entries.forEach(e => { if (e.exerciseId === srcId) e.exerciseId = dstId; });
+  db.exercises = db.exercises.filter(e => e.id !== srcId);
+}
+function exResultsHtml(q) {
+  const r = routine(ui.planId); if (!r) return '';
+  const inDay = new Set(r.exercises.map(x => x.id));
+  const nq = normSearch(q.trim());
+  let list = db.exercises.filter(e => !inDay.has(e.id) && (!nq || normSearch(e.name).includes(nq)));
+  list.sort((a, b) => sessionsCount(b.id) - sessionsCount(a.id) || a.name.localeCompare(b.name));
+  list = list.slice(0, nq ? 8 : 5);
+  const exact = nq && db.exercises.some(e => normKey(e.name) === normKey(q));
+  let h = `<span class="muted sm">${nq ? (list.length ? 'Coincidencias en tus ejercicios' : 'No hay coincidencias') : (list.length ? 'Tus ejercicios más usados' : '')}</span>`;
+  h += list.map(e => `<button class="pick" data-a="exPick" data-id="${e.id}"><span class="col"><span class="pick-n">${esc(e.name)}</span><span class="muted sm">${esc(usageText(e.id))}</span></span><span class="pick-plus">+</span></button>`).join('');
+  if (nq && !exact) h += `<button class="btn dashed" data-a="exAdd">+ Crear “${esc(q.trim())}” como ejercicio nuevo</button>`;
+  return h;
+}
 const ejs = n => n + (n === 1 ? ' ejercicio' : ' ejercicios');
 const cur = () => db.current.entries[db.current.idx];
 
@@ -163,8 +237,9 @@ function startTraining(rid) {
   db.current = {
     routineId: r.id, routineName: r.name, programId: p ? p.id : null, idx: 0, startedAt: Date.now(),
     entries: r.exercises.map(ex => {
+      const meta = exMeta(ex.id) || { name: 'Ejercicio', unit: 'kg' };
       const last = lastEntry(ex.id);
-      const u = unitOf(ex), lu = last ? unitOf(last) : u, step = stepFor(u);
+      const u = unitOf(meta), lu = last ? unitOf(last) : u, step = stepFor(u);
       const cw = w => r1(conv(w, lu, u));
       const ew = last ? cw(last.eff.w) : 0;
       const er = last ? last.eff.r : (ex.repMin || 8);
@@ -173,7 +248,7 @@ function startTraining(rid) {
         const lw = last && last.warm && last.warm[k];
         warm.push(lw ? { w: cw(lw.w), r: lw.r, done: false } : { w: roundTo(ew * (k === 0 ? 0.5 : 0.75), step), r: k === 0 ? 12 : 6, done: false });
       }
-      return { exerciseId: ex.id, name: ex.name, unit: u, warm, eff: { w: ew, r: er, done: false, tech: 'Normal' } };
+      return { exerciseId: ex.id, name: meta.name, unit: u, warm, eff: { w: ew, r: er, done: false, tech: 'Normal' } };
     })
   };
   save(); go('train');
@@ -253,7 +328,7 @@ function go(v) { ui.view = v; ui.keep = false; render(); }
 function rerender() { ui.keep = true; render(); }
 function render() {
   const m0 = $('.main'); const top = ui.keep && m0 ? m0.scrollTop : 0;
-  const V = { home: vHome, train: vTrain, plan: vPlan, programa: vPrograma, phase: vPhase, progress: vProgress, settings: vSettings, summary: vSummary };
+  const V = { home: vHome, train: vTrain, plan: vPlan, programa: vPrograma, phase: vPhase, progress: vProgress, settings: vSettings, summary: vSummary, catalog: vCatalog, exEdit: vExEdit };
   $('#app').innerHTML = (V[ui.view] || vHome)();
   const m = $('.main'); if (m) m.scrollTop = top;
   ui.keep = false;
@@ -320,12 +395,12 @@ function vTrain() {
   const c = db.current;
   if (!c) { ui.view = 'home'; return vHome(); }
   const e = cur(), n = c.entries.length, last = lastEntry(e.exerciseId), u = unitOf(e), cmp = compare(e.eff, last, u);
-  const ex = exById(e.exerciseId) || {};
+  const ex = slotOf(c.routineId, e.exerciseId) || anySlot(e.exerciseId) || {};
   const range = ex.repMin && ex.repMax ? `${ex.repMin}–${ex.repMax} reps` : ex.repMin ? `mín. ${ex.repMin} reps` : ex.repMax ? `máx. ${ex.repMax} reps` : '';
   const topHit = ex.repMax && e.eff.r >= ex.repMax;
   const dn = dayNum(c.routineId);
   let b = `<div class="segs" style="grid-template-columns:repeat(${n},1fr)">${c.entries.map((x, i) => `<i class="${i === c.idx ? 'cur' : x.eff.done ? 'ok' : ''}"></i>`).join('')}</div>
-  <h2 class="exname">${esc(e.name)}</h2>
+  <h2 class="exname">${esc(findExName(e.exerciseId))}</h2>
   ${range || ex.notes ? `<div class="card notes">${range ? `<span class="eyebrow hl">Objetivo · ${range}</span>` : ''}${ex.notes ? `<span class="note-t">${esc(ex.notes)}</span>` : ''}</div>` : ''}
   <div class="card row-sb" style="flex-direction:row"><div class="col"><span class="eyebrow">La vez pasada${last ? ' · ' + fdate(last.date) : ''}</span><span class="num md">${last ? `${fmt(last.eff.w)} ${unitOf(last)} × ${last.eff.r} reps` : 'Sin registro'}</span>${last && last.eff.w > 0 ? `<span class="muted sm">≈ ${fmt(r1(conv(last.eff.w, unitOf(last), other(unitOf(last)))))} ${other(unitOf(last))}</span>` : ''}</div><span class="muted sm">${last && last.eff.tech && last.eff.tech !== 'Normal' ? esc(last.eff.tech) : 'serie al fallo'}</span></div>
   <span class="eyebrow mt">Calentamiento</span>`;
@@ -367,15 +442,15 @@ function vPlan() {
   let b = `<div class="card"><label class="eyebrow" for="rname">Nombre del día</label><input id="rname" class="inp" value="${esc(r.name)}" data-f="rname"></div>
   <span class="eyebrow mt">Ejercicios, en orden</span>`;
   b += r.exercises.length ? r.exercises.map((x, i) => `<div class="card">
-    <div class="row"><span class="badge">${i + 1}</span><input class="inp" value="${esc(x.name)}" data-f="exname" data-i="${i}" aria-label="Nombre del ejercicio ${i + 1}"></div>
+    <div class="row"><span class="badge">${i + 1}</span><span class="col" style="flex:1"><span class="pick-n">${esc(findExName(x.id))}</span><span class="muted sm">${daysUsing(x.id).length > 1 ? 'compartido con ' + esc(daysUsing(x.id).filter(d => d.id !== r.id).map(d => d.name).join(', ')) : sesTxt(sessionsCount(x.id))}</span></span><button class="btn text hl-t" data-a="exEdit" data-id="${x.id}" data-back="plan">Renombrar</button></div>
     <div class="row"><span class="muted sm" style="flex:1">Reps objetivo</span>
       <input class="inp mini" type="number" inputmode="numeric" min="0" placeholder="mín" value="${x.repMin || ''}" data-f="repMin" data-i="${i}" aria-label="Reps mínimas">
       <span class="muted">a</span>
       <input class="inp mini" type="number" inputmode="numeric" min="0" placeholder="máx" value="${x.repMax || ''}" data-f="repMax" data-i="${i}" aria-label="Reps máximas"></div>
     <textarea class="inp ta" rows="2" placeholder="Notas: enlazar con…, al fallo, cuidar la zona lumbar…" data-f="exnotes" data-i="${i}" aria-label="Notas del ejercicio ${i + 1}">${esc(x.notes || '')}</textarea>
     <div class="seg"><span class="muted sm" style="flex:1">Unidad de peso</span>
-      <button class="chip ${unitOf(x) === 'kg' ? 'on' : ''}" data-a="unit" data-i="${i}" data-u="kg">kg</button>
-      <button class="chip ${unitOf(x) === 'lb' ? 'on' : ''}" data-a="unit" data-i="${i}" data-u="lb">lb</button></div>
+      <button class="chip ${unitOf(exMeta(x.id)) === 'kg' ? 'on' : ''}" data-a="unit" data-id="${x.id}" data-u="kg">kg</button>
+      <button class="chip ${unitOf(exMeta(x.id)) === 'lb' ? 'on' : ''}" data-a="unit" data-id="${x.id}" data-u="lb">lb</button></div>
     <div class="row-sb"><div class="seg"><span class="muted sm">Calent.</span>
       <button class="chip ${x.warmups === 1 ? 'on' : ''}" data-a="warmups" data-i="${i}" data-n="1">1</button>
       <button class="chip ${x.warmups === 2 ? 'on' : ''}" data-a="warmups" data-i="${i}" data-n="2">2</button></div>
@@ -383,7 +458,9 @@ function vPlan() {
       <button class="icon-btn" data-a="exMove" data-i="${i}" data-d="1" aria-label="Bajar" ${i === r.exercises.length - 1 ? 'disabled' : ''}>${ICON.down}</button>
       <button class="icon-btn" data-a="exDel" data-i="${i}" aria-label="Eliminar ejercicio">${ICON.trash}</button></div></div></div>`).join('')
     : `<div class="card muted">Todavía no hay ejercicios. Agrega el primero abajo.</div>`;
-  b += `<div class="card"><label class="eyebrow" for="newex">Agregar ejercicio</label><div class="row"><input id="newex" class="inp" placeholder="Ej. Press de banca plano" enterkeyhint="done"><button class="btn acc" data-a="exAdd">Agregar</button></div></div>
+  b += `<div class="card today"><label class="eyebrow hl" for="newex">Agregar ejercicio</label><input id="newex" class="inp" placeholder="Busca o escribe uno nuevo…" enterkeyhint="done" autocomplete="off">
+    <div id="exResults" class="col" style="gap:8px">${exResultsHtml('')}</div>
+    <span class="muted sm">Si eliges uno existente, su historial se comparte entre todos los días donde lo uses.</span></div>
   <button class="btn text danger" data-a="delRoutine">Eliminar día</button>`;
   return screen({ title: 'Planear día', sub: r.name, back: ui.planBack || 'home', body: b, foot: `<button class="btn acc lg full" data-a="train" data-id="${r.id}">${ICON.play} Entrenar este día</button>` });
 }
@@ -486,12 +563,14 @@ function vProgress() {
   const days = p ? phaseDays(p).concat(db.routines.filter(r => !p.routineIds.includes(r.id))) : db.routines;
   b += days.filter(r => r.exercises.length).map(r => `<span class="eyebrow mt">${esc(r.name)}</span>` + r.exercises.map(x => {
     const h = history(x.id), l = h[h.length - 1];
-    return `<button class="card rrow" data-a="exHist" data-id="${x.id}"><div class="col"><span class="rname" style="font-size:16px">${esc(x.name)}</span><span class="muted sm">${h.length ? `${h.length} ${h.length === 1 ? 'sesión' : 'sesiones'} · último ${fmt(l.w)} ${l.unit} × ${l.r}` : 'Sin registros'}</span></div>${ICON.chev}</button>`;
+    return `<button class="card rrow" data-a="exHist" data-id="${x.id}"><div class="col"><span class="rname" style="font-size:16px">${esc(findExName(x.id))}</span><span class="muted sm">${h.length ? `${h.length} ${h.length === 1 ? 'sesión' : 'sesiones'} · último ${fmt(l.w)} ${l.unit} × ${l.r}` : 'Sin registros'}</span></div>${ICON.chev}</button>`;
   }).join('')).join('');
+  const orphans = db.exercises.filter(e => !daysUsing(e.id).length && sessionsCount(e.id));
+  if (orphans.length) b += `<span class="eyebrow mt">Sin día asignado</span>` + orphans.map(e => `<button class="card rrow" data-a="exHist" data-id="${e.id}"><div class="col"><span class="rname" style="font-size:16px">${esc(e.name)}</span><span class="muted sm">${sesTxt(sessionsCount(e.id))}</span></div>${ICON.chev}</button>`).join('');
   return screen({ title: 'Progreso', sub: 'Serie efectiva', body: b, nav: 'progress' });
 }
 function vExercise() {
-  const h = history(ui.exId), ex = exById(ui.exId) || {}, cu = unitOf(ex);
+  const h = history(ui.exId), ex = anySlot(ui.exId) || {}, cu = unitOf(exMeta(ui.exId));
   let b = '';
   if (h.length) {
     const ws = h.map(x => r1(conv(x.w, x.unit, cu))), n = ws.length;
@@ -527,7 +606,8 @@ function vExercise() {
 function vSettings() {
   const s = db.settings;
   const chips = (k, opts, unit) => `<div class="chips">${opts.map(n => `<button class="chip ${s[k] === n ? 'on' : ''}" data-a="setNum" data-k="${k}" data-n="${n}">${n}${unit}</button>`).join('')}</div>`;
-  const b = `<div class="card"><span class="eyebrow">Incremento con −/+ en kg</span>${chips('step', [1, 2.5, 5], ' kg')}
+  const b = `<button class="card rrow" data-a="go" data-v="catalog"><div class="col"><span class="eyebrow">Mis ejercicios</span><span class="rname" style="font-size:16px">${db.exercises.length} ejercicios</span><span class="muted sm">Renombrar, cambiar unidad o fusionar duplicados${duplicatePairs().length ? ` · <span class="hl-txt">${duplicatePairs().length} posible${duplicatePairs().length === 1 ? '' : 's'} duplicado${duplicatePairs().length === 1 ? '' : 's'}</span>` : ''}</span></div>${ICON.chev}</button>
+  <div class="card"><span class="eyebrow">Incremento con −/+ en kg</span>${chips('step', [1, 2.5, 5], ' kg')}
     <span class="eyebrow">Incremento con −/+ en lb</span>${chips('stepLb', [2.5, 5, 10], ' lb')}</div>
   <div class="card"><span class="eyebrow">Descanso después de calentamiento</span>${chips('restWarm', [45, 60, 90], ' s')}
     <span class="eyebrow">Descanso después de la serie efectiva</span>${chips('restEff', [90, 120, 180], ' s')}</div>
@@ -535,8 +615,52 @@ function vSettings() {
     <button class="btn acc" data-a="exportCsv">Exportar a Excel (.csv)</button>
     <button class="btn" data-a="backup">Descargar respaldo</button>
     <button class="btn" data-a="importBtn">Restaurar respaldo</button></div>
-  <button class="btn text danger" data-a="reset">Borrar todos los datos</button>`;
+  <button class="btn text danger" data-a="reset">Borrar todos los datos</button>
+  <span class="muted sm" style="text-align:center">${APP_NAME} · ${APP_VER}</span>`;
   return screen({ title: 'Ajustes', sub: db.programName || 'Heavy Duty', body: b, nav: 'settings' });
+}
+
+/* ---------- ajustes › mis ejercicios ---------- */
+function catListHtml(q) {
+  const nq = normSearch(q.trim());
+  const list = db.exercises.filter(e => !nq || normSearch(e.name).includes(nq)).sort((a, b) => a.name.localeCompare(b.name, 'es'));
+  if (!list.length) return `<div class="card muted">No hay ejercicios que coincidan.</div>`;
+  return list.map(e => `<button class="card rrow" data-a="exEdit" data-id="${e.id}" data-back="catalog"><div class="col"><span class="rname" style="font-size:16px">${esc(e.name)}</span><span class="muted sm">${esc(usageText(e.id))}</span></div><span class="row"><span class="badge2 b-gray">${unitOf(e)}</span>${ICON.chev}</span></button>`).join('');
+}
+function vCatalog() {
+  const dups = duplicatePairs();
+  let b = `<input id="catq" class="inp" placeholder="Buscar ejercicio…" aria-label="Buscar ejercicio" autocomplete="off">`;
+  if (dups.length) b += `<div class="card notes"><span class="eyebrow hl">Posibles duplicados</span>${dups.slice(0, 4).map(([a, c]) => `<button class="pick" data-a="exEdit" data-id="${a.id}" data-back="catalog"><span class="col"><span class="note-t">“${esc(a.name)}” y “${esc(c.name)}”</span><span class="muted sm">Toca para revisar y fusionar</span></span>${ICON.chev}</button>`).join('')}</div>`;
+  b += `<span class="eyebrow mt">${db.exercises.length} ejercicios</span><div id="catList" class="col" style="gap:10px">${catListHtml('')}</div>`;
+  return screen({ title: 'Mis ejercicios', sub: 'Ajustes', back: 'settings', body: b });
+}
+function vExEdit() {
+  const e = exMeta(ui.editId);
+  if (!e) { ui.view = 'catalog'; return vCatalog(); }
+  const ds = daysUsing(e.id), n = sessionsCount(e.id), sim = similarTo(e.id);
+  const others = db.exercises.filter(o => o.id !== e.id).sort((a, c) => a.name.localeCompare(c.name, 'es'));
+  let b = `<div class="card"><label class="eyebrow" for="catName">Nombre</label><input id="catName" class="inp" value="${esc(e.name)}" data-f="catName">
+    <span class="muted sm">El nuevo nombre aparece en todos los días, en el historial y en la exportación a Excel.</span>
+    <div class="seg"><span class="muted sm" style="flex:1">Unidad de peso</span>
+      <button class="chip ${unitOf(e) === 'kg' ? 'on' : ''}" data-a="unit" data-id="${e.id}" data-u="kg">kg</button>
+      <button class="chip ${unitOf(e) === 'lb' ? 'on' : ''}" data-a="unit" data-id="${e.id}" data-u="lb">lb</button></div></div>
+  <div class="card"><span class="eyebrow">Se usa en</span><span>${ds.length ? esc(ds.map(r => r.name).join(', ')) : 'Ningún día'}</span><span class="muted sm">${n} ${n === 1 ? 'sesión registrada' : 'sesiones registradas'}</span></div>`;
+  if (others.length) {
+    b += `<div class="card"><span class="eyebrow">¿Es el mismo que otro?</span><span class="sm" style="color:#C9C7C2">Fusionar junta los dos en uno solo: el historial se suma y los días quedan apuntando al mismo ejercicio. Se conserva el nombre del ejercicio que elijas.</span>
+      ${sim.map(o => `<button class="pick" data-a="exMerge" data-id="${o.id}"><span class="col"><span class="pick-n">Fusionar con “${esc(o.name)}”</span><span class="muted sm">sugerido · ${sesTxt(sessionsCount(o.id))}</span></span>${ICON.chev}</button>`).join('')}
+      <label class="muted sm" for="mergeSel">${sim.length ? 'O elige otro' : 'Elige con cuál fusionarlo'}</label>
+      <select id="mergeSel" class="inp">${others.map(o => `<option value="${o.id}">${esc(o.name)}</option>`).join('')}</select>
+      <button class="btn ghost" data-a="exMergeSel">Fusionar con el seleccionado</button></div>`;
+  }
+  b += (!ds.length && !n) ? `<button class="btn text danger" data-a="exDelCat">Eliminar ejercicio</button>` : `<span class="muted sm" style="text-align:center">Solo se puede eliminar si no está en ningún día y no tiene historial.</span>`;
+  return screen({ title: 'Editar ejercicio', sub: 'Mis ejercicios', back: ui.editBack || 'catalog', body: b });
+}
+function doMerge(dstId) {
+  const src = exMeta(ui.editId), dst = exMeta(dstId);
+  if (!src || !dst) return;
+  if (!confirm(`¿Fusionar “${src.name}” con “${dst.name}”?\n\nSe queda el nombre “${dst.name}” y el historial de los dos se junta. No se puede deshacer.`)) return;
+  mergeExercise(src.id, dst.id); save();
+  toast('Ejercicios fusionados'); ui.editId = dst.id; go('exEdit');
 }
 
 /* ---------- exportar / respaldo ---------- */
@@ -553,12 +677,13 @@ function exportCsv() {
     const pn = (phaseById(s.programId) || {}).name || '';
     const dm = s.durationSec ? Math.round(s.durationSec / 60) : '';
     s.entries.forEach(e => {
-      (e.warm || []).forEach((w, k) => rows.push([s.date, db.programName || '', pn, s.routineName, e.name, 'Calentamiento ' + (k + 1), w.w, unitOf(e), w.r, '', dm]));
-      rows.push([s.date, db.programName || '', pn, s.routineName, e.name, 'Efectiva', e.eff.w, unitOf(e), e.eff.r, e.eff.tech || '', dm]);
+      const en = findExName(e.exerciseId);
+      (e.warm || []).forEach((w, k) => rows.push([s.date, db.programName || '', pn, s.routineName, en, 'Calentamiento ' + (k + 1), w.w, unitOf(e), w.r, '', dm]));
+      rows.push([s.date, db.programName || '', pn, s.routineName, en, 'Efectiva', e.eff.w, unitOf(e), e.eff.r, e.eff.tech || '', dm]);
     });
   });
   const csv = '﻿' + rows.map(r => r.map(c => { const v = String(c); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; }).join(',')).join('\r\n');
-  download(csv, 'text/csv;charset=utf-8', `entrenamientos-${todayISO()}.csv`);
+  download(csv, 'text/csv;charset=utf-8', `HD-entrenos-${todayISO()}.csv`);
 }
 function importFile(file) {
   if (!file) return;
@@ -621,7 +746,20 @@ const ACT = {
   skipRest: () => { stopRest(); rerender(); },
 
   warmups: d => { routine(ui.planId).exercises[+d.i].warmups = +d.n; save(); rerender(); },
-  unit: d => { routine(ui.planId).exercises[+d.i].unit = d.u; save(); rerender(); },
+  unit: d => { const m = exMeta(d.id); if (m) { m.unit = d.u; save(); rerender(); } },
+  exPick: d => {
+    const r = routine(ui.planId);
+    if (!r.exercises.some(x => x.id === d.id)) r.exercises.push({ id: d.id, warmups: 1 });
+    save(); rerender(); toast('Agregado: ' + findExName(d.id));
+  },
+  exEdit: d => { ui.editId = d.id; ui.editBack = d.back || 'catalog'; go('exEdit'); },
+  exMerge: d => doMerge(d.id),
+  exMergeSel: () => { const s = $('#mergeSel'); if (s && s.value) doMerge(s.value); },
+  exDelCat: () => {
+    const e = exMeta(ui.editId);
+    if (!confirm(`¿Eliminar “${e.name}”?`)) return;
+    db.exercises = db.exercises.filter(x => x.id !== e.id); save(); go('catalog');
+  },
   exMove: d => {
     const xs = routine(ui.planId).exercises, i = +d.i, j = i + +d.d;
     if (j < 0 || j >= xs.length) return;
@@ -629,14 +767,18 @@ const ACT = {
   },
   exDel: d => {
     const xs = routine(ui.planId).exercises, i = +d.i;
-    if (!confirm(`¿Quitar "${xs[i].name}" de este día? Su historial se conserva.`)) return;
+    if (!confirm(`¿Quitar "${findExName(xs[i].id)}" de este día? Su historial y el ejercicio se conservan.`)) return;
     xs.splice(i, 1); save(); rerender();
   },
   exAdd: () => {
     const inp = $('#newex'), v = inp ? inp.value.trim() : '';
     if (!v) return toast('Escribe el nombre del ejercicio');
-    routine(ui.planId).exercises.push({ id: uid(), name: v, warmups: 1 }); save(); rerender();
-    const n = $('#newex'); if (n) n.focus();
+    const r = routine(ui.planId);
+    let e = db.exercises.find(x => normKey(x.name) === normKey(v));
+    if (e && r.exercises.some(x => x.id === e.id)) return toast('Ese ejercicio ya está en este día');
+    if (!e) { e = { id: uid(), name: v, unit: 'kg' }; db.exercises.push(e); toast('Ejercicio nuevo creado'); }
+    else toast('Ya existía: se usó “' + e.name + '”');
+    r.exercises.push({ id: e.id, warmups: 1 }); save(); rerender();
   },
   delRoutine: () => {
     const r = routine(ui.planId);
@@ -657,7 +799,7 @@ const ACT = {
 
   setNum: d => { db.settings[d.k] = +d.n; save(); rerender(); },
   exportCsv,
-  backup: () => download(JSON.stringify(db, null, 1), 'application/json', `respaldo-heavyduty-${todayISO()}.json`),
+  backup: () => download(JSON.stringify(db, null, 1), 'application/json', `HD-respaldo-${todayISO()}.json`),
   importBtn: () => $('#importFile').click(),
   reset: () => {
     if (confirm('¿Borrar TODOS los datos? Descarga un respaldo antes.') && confirm('¿Seguro? Esto no se puede deshacer.')) { db = seed(); save(); go('home'); }
@@ -680,12 +822,25 @@ document.addEventListener('change', ev => {
   }
   if (f === 'progName') { db.programName = t.value.trim() || 'Mi programa'; save(); return; }
   if (f === 'rname') { routine(ui.planId).name = t.value.trim() || 'Día'; save(); return; }
-  if (f === 'exname') { const v = t.value.trim(); if (v) { routine(ui.planId).exercises[+t.dataset.i].name = v; save(); } return; }
+  if (f === 'catName') {
+    const e = exMeta(ui.editId), v = t.value.trim();
+    if (!e) return;
+    if (!v) { t.value = e.name; return toast('El nombre no puede quedar vacío'); }
+    const clash = db.exercises.find(x => x.id !== e.id && normKey(x.name) === normKey(v));
+    e.name = v; save();
+    toast(clash ? `Ya existe “${clash.name}”: considera fusionarlos` : 'Nombre actualizado');
+    return;
+  }
   if (f === 'exnotes') { routine(ui.planId).exercises[+t.dataset.i].notes = t.value.trim(); save(); return; }
   if (f === 'repMin' || f === 'repMax') { const v = Math.round(num(t.value, 0)); routine(ui.planId).exercises[+t.dataset.i][f] = v > 0 ? v : null; save(); return; }
   if (f === 'pstart' && t.value) { ui.form.start = t.value; rerender(); }
 });
-document.addEventListener('input', ev => { if (ev.target.dataset.f === 'pname') ui.form.name = ev.target.value; });
+document.addEventListener('input', ev => {
+  const t = ev.target;
+  if (t.dataset.f === 'pname') ui.form.name = t.value;
+  if (t.id === 'newex') { const c = $('#exResults'); if (c) c.innerHTML = exResultsHtml(t.value); }
+  if (t.id === 'catq') { const c = $('#catList'); if (c) c.innerHTML = catListHtml(t.value); }
+});
 document.addEventListener('keydown', ev => { if (ev.key === 'Enter' && ev.target.id === 'newex') ACT.exAdd(); });
 document.addEventListener('focusin', ev => { if (ev.target.matches('.stepper input')) ev.target.select(); });
 document.addEventListener('visibilitychange', () => {
