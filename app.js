@@ -47,6 +47,7 @@ const fmtDur = sec => { const h = Math.floor(sec / 3600), m = Math.floor(sec % 3
 const fmtMin = sec => Math.round(sec / 60) + ' min';
 const fmtTime = ms => new Date(ms).toLocaleTimeString('es-MX', { hour: 'numeric', minute: '2-digit' });
 
+const APP_NAME = 'HD', APP_VER = 'V7';
 const LB = 0.45359237;
 const conv = (w, from, to) => from === to ? w : from === 'lb' ? w * LB : w / LB;
 const other = u => u === 'lb' ? 'kg' : 'lb';
@@ -197,17 +198,65 @@ function usageText(id) {
   if (l) parts.push(`último ${fmt(l.eff.w)} ${unitOf(l)} × ${l.eff.r}`);
   return parts.join(' · ');
 }
-// Ejercicios con nombre muy parecido (posibles duplicados)
+/* ---------- grupo muscular y posibles duplicados (v7) ---------- */
+const GROUPS = ['Pecho', 'Espalda', 'Hombro', 'Bíceps', 'Tríceps', 'Pierna', 'Core', 'Otro'];
+const GROUP_RULES = [
+  ['Pierna', /femoral|pierna|prensa|sentadilla|pantorrilla|gemelo|desplante|zancada|hip ?thrust|glute|aductor|abductor|rumano|cuadricep|extension de rodilla|hack|bulgara/],
+  ['Tríceps', /tricep|fondo|frances|patada|rompecraneo|copa/],
+  ['Hombro', /jalon a la cara|face ?pull|lateral|posterior|militar|hombro|deltoide|arnold|frontal|menton|press de hombro|pajaro/],
+  ['Espalda', /jalon|remo|dominada|peso muerto|espalda|hiperextension|encogimiento|pull ?over con polea|dorsal/],
+  ['Bíceps', /bicep|curl|martillo|predicador/],
+  ['Pecho', /pecho|banca|apertura|pec ?deck|cruce|inclinado|declinado|lagartija|pullover|pectoral|press de pecho/],
+  ['Core', /abdominal|crunch|plancha|core|oblicuo|rueda|elevacion de piernas/]
+];
+function guessGroup(name) {
+  const k = normKey(name);
+  const c = CATALOGO.find(x => normKey(x.n) === k);
+  if (c) return c.g;
+  const t = normSearch(name);
+  const r = GROUP_RULES.find(([, re]) => re.test(t));
+  return r ? r[0] : 'Otro';
+}
+const groupOf = e => (e && e.group) || 'Otro';
+function fillGroups() {
+  let ch = false;
+  db.exercises.forEach(e => { if (!e.group || !GROUPS.includes(e.group)) { e.group = guessGroup(e.name); ch = true; } });
+  if (!db.settings.notDup) { db.settings.notDup = []; ch = true; }
+  if (ch) save();
+}
+const STOP = new Set(['de', 'con', 'en', 'la', 'el', 'los', 'las', 'a', 'al', 'y', 'del', 'para', 'por', 'una', 'un']);
+const EQUIP_W = { barra: 'Barra', z: 'Barra Z', mancuerna: 'Mancuerna', polea: 'Polea', cable: 'Polea', maquina: 'Máquina', smith: 'Smith', kettlebell: 'Kettlebell' };
+const stem = w => w.length > 4 && w.endsWith('es') ? w.slice(0, -2) : w.length > 3 && w.endsWith('s') ? w.slice(0, -1) : w;
+function nameParts(name) {
+  const words = normSearch(name).replace(/[^a-z0-9 ]/g, ' ').split(/\s+/).filter(Boolean).map(stem);
+  const eq = new Set(), toks = new Set();
+  words.forEach(w => { if (STOP.has(w)) return; if (EQUIP_W[w]) { eq.add(EQUIP_W[w] === 'Barra Z' ? 'Barra' : EQUIP_W[w]); return; } toks.add(w); });
+  return { eq, toks };
+}
+function looksSame(a, b) {
+  if (normKey(a.name) === normKey(b.name)) return true;
+  const ga = groupOf(a), gb = groupOf(b);
+  if (ga !== gb && ga !== 'Otro' && gb !== 'Otro') return false;
+  const A = nameParts(a.name), B = nameParts(b.name);
+  if (A.eq.size && B.eq.size && ![...A.eq].some(x => B.eq.has(x))) return false; // equipo distinto: no es el mismo
+  const shared = [...A.toks].filter(t => B.toks.has(t)).length;
+  const small = Math.min(A.toks.size, B.toks.size);
+  return small > 0 && (shared >= 2 || (small === 1 && shared === 1));
+}
+const pairKey = (a, b) => [a, b].sort().join('|');
+const isNotDup = (a, b) => (db.settings.notDup || []).includes(pairKey(a, b));
+// Ejercicios con nombre muy parecido y del mismo grupo (posibles duplicados)
 function similarTo(id) {
   const m = exMeta(id); if (!m) return [];
-  const k = normKey(m.name);
-  return db.exercises.filter(e => e.id !== id && k.length > 2 && (normKey(e.name) === k || normKey(e.name).includes(k) || k.includes(normKey(e.name))));
+  return db.exercises.filter(e => e.id !== id && !isNotDup(id, e.id) && looksSame(m, e));
 }
 function duplicatePairs() {
   const out = [], seen = new Set();
-  db.exercises.forEach(e => similarTo(e.id).forEach(o => { const key = [e.id, o.id].sort().join('|'); if (!seen.has(key)) { seen.add(key); out.push([e, o]); } }));
+  db.exercises.forEach(e => similarTo(e.id).forEach(o => { const key = pairKey(e.id, o.id); if (!seen.has(key)) { seen.add(key); out.push([e, o]); } }));
   return out;
 }
+// nombres que ya tienes (incluye los fusionados) para no volver a sugerirlos del catálogo
+const ownByName = n => { const k = normKey(n); return db.exercises.find(e => normKey(e.name) === k || (e.aliases || []).some(a => normKey(a) === k)) || null; };
 function mergeExercise(srcId, dstId) {
   db.routines.forEach(r => {
     const hasDst = r.exercises.some(x => x.id === dstId);
@@ -215,20 +264,25 @@ function mergeExercise(srcId, dstId) {
   });
   db.sessions.forEach(s => s.entries.forEach(e => { if (e.exerciseId === srcId) e.exerciseId = dstId; }));
   if (db.current) db.current.entries.forEach(e => { if (e.exerciseId === srcId) e.exerciseId = dstId; });
+  const src = exMeta(srcId), dst = exMeta(dstId);
+  if (src && dst) {
+    dst.aliases = [...new Set([...(dst.aliases || []), src.name, ...(src.aliases || [])])].filter(a => normKey(a) !== normKey(dst.name));
+    if (groupOf(dst) === 'Otro' && groupOf(src) !== 'Otro') dst.group = src.group;
+  }
   db.exercises = db.exercises.filter(e => e.id !== srcId);
+  db.settings.notDup = (db.settings.notDup || []).filter(k => !k.split('|').includes(srcId));
 }
 function exResultsHtml(q) {
   const r = routine(ui.planId); if (!r) return '';
   const inDay = new Set(r.exercises.map(x => x.id));
   const nq = normSearch(q.trim());
-  let list = db.exercises.filter(e => !inDay.has(e.id) && (!nq || normSearch(e.name).includes(nq)));
+  let list = db.exercises.filter(e => !inDay.has(e.id) && (!nq || normSearch(e.name).includes(nq) || (e.aliases || []).some(a => normSearch(a).includes(nq))));
   list.sort((a, b) => sessionsCount(b.id) - sessionsCount(a.id) || a.name.localeCompare(b.name));
   list = list.slice(0, nq ? 8 : 5);
-  const exact = nq && db.exercises.some(e => normKey(e.name) === normKey(q));
+  const exact = nq && !!ownByName(q);
   let h = `<span class="muted sm">${nq ? (list.length ? 'Coincidencias en tus ejercicios' : 'No hay coincidencias') : (list.length ? 'Tus ejercicios más usados' : '')}</span>`;
-  h += list.map(e => `<button class="pick" data-a="exPick" data-id="${e.id}"><span class="col"><span class="pick-n">${esc(e.name)}</span><span class="muted sm">${esc(usageText(e.id))}</span></span><span class="pick-plus">+</span></button>`).join('');
-  const have = new Set(db.exercises.map(e => normKey(e.name)));
-  const cm = nq ? CATALOGO.filter(c => !have.has(normKey(c.n)) && normSearch(c.n).includes(nq)).slice(0, 6) : [];
+  h += list.map(e => `<button class="pick" data-a="exPick" data-id="${e.id}"><span class="col"><span class="pick-n">${esc(e.name)}</span><span class="muted sm">${esc(groupOf(e))} · ${esc(usageText(e.id))}</span></span><span class="pick-plus">+</span></button>`).join('');
+  const cm = nq ? CATALOGO.filter(c => !ownByName(c.n) && normSearch(c.n).includes(nq)).slice(0, 6) : [];
   if (cm.length) h += `<span class="muted sm">Del catálogo</span>` + cm.map(c => catRow(c, false)).join('');
   const catExact = nq && CATALOGO.some(c => normKey(c.n) === normKey(q));
   if (nq && !exact && !catExact) h += `<button class="btn dashed" data-a="exAdd">+ Crear “${esc(q.trim())}” como ejercicio nuevo</button>`;
@@ -238,7 +292,7 @@ function exResultsHtml(q) {
 const CAT_GROUPS = ['Pecho', 'Espalda', 'Hombro', 'Bíceps', 'Tríceps', 'Pierna', 'Core'];
 function addCatToDay(c) {
   const r = routine(ui.planId); if (!r) return false;
-  let e = db.exercises.find(x => normKey(x.name) === normKey(c.n));
+  let e = ownByName(c.n);
   if (e && r.exercises.some(x => x.id === e.id)) { toast('Ese ejercicio ya está en este día'); return false; }
   if (!e) { e = { id: uid(), name: c.n, unit: catUnit(c.e), group: c.g, equip: c.e }; db.exercises.push(e); }
   r.exercises.push({ id: e.id, warmups: 1 });
@@ -249,7 +303,8 @@ function catRow(c, inDay) {
 }
 function catViewBody() {
   const f = ui.cf, r = routine(ui.planId), q = normSearch((f.q || '').trim());
-  const dayNames = new Set((r ? r.exercises : []).map(x => normKey(findExName(x.id))));
+  const dayIds = new Set((r ? r.exercises : []).map(x => x.id));
+  const dayNames = { has: k => { const e = db.exercises.find(x => normKey(x.name) === k || (x.aliases || []).some(a => normKey(a) === k)); return !!(e && dayIds.has(e.id)); } };
   const list = CATALOGO.filter(c => (f.g === 'Todos' || c.g === f.g) && (f.e === 'Todo' || c.e === f.e) && (!q || normSearch(c.n).includes(q)));
   if (!list.length) return `<div class="card muted">Ningún ejercicio del catálogo coincide. Puedes crearlo tú desde Planear día.</div>`;
   return `<span class="muted sm">${list.length} ejercicios</span><div class="col" style="gap:8px">${list.map(c => catRow(c, dayNames.has(normKey(c.n)))).join('')}</div>`;
@@ -671,21 +726,22 @@ function vSettings() {
     <button class="btn acc" data-a="exportCsv">Exportar a Excel (.csv)</button>
     <button class="btn" data-a="backup">Descargar respaldo</button>
     <button class="btn" data-a="importBtn">Restaurar respaldo</button></div>
-  <button class="btn text danger" data-a="reset">Borrar todos los datos</button>`;
+  <button class="btn text danger" data-a="reset">Borrar todos los datos</button>
+  <span class="muted sm" style="text-align:center">${APP_NAME} · ${APP_VER}</span>`;
   return screen({ title: 'Ajustes', sub: db.programName || 'Heavy Duty', body: b, nav: 'settings' });
 }
 
 /* ---------- ajustes › mis ejercicios ---------- */
 function catListHtml(q) {
   const nq = normSearch(q.trim());
-  const list = db.exercises.filter(e => !nq || normSearch(e.name).includes(nq)).sort((a, b) => a.name.localeCompare(b.name, 'es'));
+  const list = db.exercises.filter(e => !nq || normSearch(e.name).includes(nq) || normSearch(groupOf(e)).includes(nq)).sort((a, b) => GROUPS.indexOf(groupOf(a)) - GROUPS.indexOf(groupOf(b)) || a.name.localeCompare(b.name, 'es'));
   if (!list.length) return `<div class="card muted">No hay ejercicios que coincidan.</div>`;
-  return list.map(e => `<button class="card rrow" data-a="exEdit" data-id="${e.id}" data-back="catalog"><div class="col"><span class="rname" style="font-size:16px">${esc(e.name)}</span><span class="muted sm">${esc(usageText(e.id))}</span></div><span class="row"><span class="badge2 b-gray">${unitOf(e)}</span>${ICON.chev}</span></button>`).join('');
+  return list.map(e => `<button class="card rrow" data-a="exEdit" data-id="${e.id}" data-back="catalog"><div class="col"><span class="rname" style="font-size:16px">${esc(e.name)}</span><span class="muted sm">${esc(groupOf(e))} · ${esc(usageText(e.id))}</span></div><span class="row"><span class="badge2 b-gray">${unitOf(e)}</span>${ICON.chev}</span></button>`).join('');
 }
 function vCatalog() {
   const dups = duplicatePairs();
   let b = `<input id="catq" class="inp" placeholder="Buscar ejercicio…" aria-label="Buscar ejercicio" autocomplete="off">`;
-  if (dups.length) b += `<div class="card notes"><span class="eyebrow hl">Posibles duplicados</span>${dups.slice(0, 4).map(([a, c]) => `<button class="pick" data-a="exEdit" data-id="${a.id}" data-back="catalog"><span class="col"><span class="note-t">“${esc(a.name)}” y “${esc(c.name)}”</span><span class="muted sm">Toca para revisar y fusionar</span></span>${ICON.chev}</button>`).join('')}</div>`;
+  if (dups.length) b += `<div class="card notes"><span class="eyebrow hl">Posibles duplicados</span>${dups.slice(0, 4).map(([a, c]) => `<button class="pick" data-a="exEdit" data-id="${a.id}" data-back="catalog"><span class="col"><span class="note-t">“${esc(a.name)}” y “${esc(c.name)}”</span><span class="muted sm">${esc(groupOf(a))} · toca para revisar y fusionar</span></span>${ICON.chev}</button>`).join('')}</div>`;
   b += `<span class="eyebrow mt">${db.exercises.length} ejercicios</span><div id="catList" class="col" style="gap:10px">${catListHtml('')}</div>`;
   return screen({ title: 'Mis ejercicios', sub: 'Ajustes', back: 'settings', body: b });
 }
@@ -693,18 +749,25 @@ function vExEdit() {
   const e = exMeta(ui.editId);
   if (!e) { ui.view = 'catalog'; return vCatalog(); }
   const ds = daysUsing(e.id), n = sessionsCount(e.id), sim = similarTo(e.id);
-  const others = db.exercises.filter(o => o.id !== e.id).sort((a, c) => a.name.localeCompare(c.name, 'es'));
+  const g = groupOf(e), all = g === 'Otro' || ui.mergeAll;
+  const others = db.exercises.filter(o => o.id !== e.id && (all || groupOf(o) === g || groupOf(o) === 'Otro')).sort((a, c) => a.name.localeCompare(c.name, 'es'));
   let b = `<div class="card"><label class="eyebrow" for="catName">Nombre</label><input id="catName" class="inp" value="${esc(e.name)}" data-f="catName">
     <span class="muted sm">El nuevo nombre aparece en todos los días, en el historial y en la exportación a Excel.</span>
     <div class="seg"><span class="muted sm" style="flex:1">Unidad de peso</span>
       <button class="chip ${unitOf(e) === 'kg' ? 'on' : ''}" data-a="unit" data-id="${e.id}" data-u="kg">kg</button>
-      <button class="chip ${unitOf(e) === 'lb' ? 'on' : ''}" data-a="unit" data-id="${e.id}" data-u="lb">lb</button></div></div>
+      <button class="chip ${unitOf(e) === 'lb' ? 'on' : ''}" data-a="unit" data-id="${e.id}" data-u="lb">lb</button></div>
+    <span class="eyebrow mt">Grupo muscular</span>
+    <div class="chips" role="group" aria-label="Grupo muscular">${GROUPS.map(x => `<button class="chip ${g === x ? 'on' : ''}" data-a="exGroup" data-v="${x}" aria-pressed="${g === x}">${x}</button>`).join('')}</div>
+    <span class="muted sm">Solo se sugiere fusionar con ejercicios del mismo grupo.</span></div>
+  ${(e.aliases || []).length ? `<div class="card"><span class="eyebrow">También llamado</span><span class="sm" style="color:#C9C7C2">${esc(e.aliases.join(', '))}</span><span class="muted sm">Nombres que se fusionaron aquí. Si los buscas, te lleva a este ejercicio.</span></div>` : ''}
   <div class="card"><span class="eyebrow">Se usa en</span><span>${ds.length ? esc(ds.map(r => r.name).join(', ')) : 'Ningún día'}</span><span class="muted sm">${n} ${n === 1 ? 'sesión registrada' : 'sesiones registradas'}</span></div>`;
-  if (others.length) {
+  {
     b += `<div class="card"><span class="eyebrow">¿Es el mismo que otro?</span><span class="sm" style="color:#C9C7C2">Fusionar junta los dos en uno solo: el historial se suma y los días quedan apuntando al mismo ejercicio. Se conserva el nombre del ejercicio que elijas.</span>
-      ${sim.map(o => `<button class="pick" data-a="exMerge" data-id="${o.id}"><span class="col"><span class="pick-n">Fusionar con “${esc(o.name)}”</span><span class="muted sm">sugerido · ${sesTxt(sessionsCount(o.id))}</span></span>${ICON.chev}</button>`).join('')}
-      <label class="muted sm" for="mergeSel">${sim.length ? 'O elige otro' : 'Elige con cuál fusionarlo'}</label>
-      <select id="mergeSel" class="inp">${others.map(o => `<option value="${o.id}">${esc(o.name)}</option>`).join('')}</select>
+      ${sim.map(o => `<div class="col" style="gap:4px"><button class="pick" data-a="exMerge" data-id="${o.id}"><span class="col"><span class="pick-n">Fusionar con “${esc(o.name)}”</span><span class="muted sm">sugerido · ${sesTxt(sessionsCount(o.id))}</span></span>${ICON.chev}</button><button class="btn text" style="height:36px;align-self:flex-end" data-a="exNotDup" data-id="${o.id}">No es el mismo, no sugerir</button></div>`).join('')}
+      <label class="muted sm" for="mergeSel">${sim.length ? 'O elige otro' : 'Elige con cuál fusionarlo'}${all ? '' : ` (solo ${esc(g)})`}</label>
+      ${others.length ? '' : `<span class="sm" style="color:#C9C7C2">No tienes otros ejercicios de ${esc(g)}.</span>`}
+      <select id="mergeSel" class="inp" ${others.length ? '' : 'disabled'}><option value="">Elegir ejercicio…</option>${others.map(o => `<option value="${o.id}">${esc(o.name)}${all && groupOf(o) !== g ? ` · ${esc(groupOf(o))}` : ''}</option>`).join('')}</select>
+      ${g !== 'Otro' ? `<button class="btn text" style="height:36px" data-a="mergeAll">${ui.mergeAll ? 'Mostrar solo ' + esc(g) : 'Mostrar todos los grupos'}</button>` : ''}
       <button class="btn ghost" data-a="exMergeSel">Fusionar con el seleccionado</button></div>`;
   }
   b += (!ds.length && !n) ? `<button class="btn text danger" data-a="exDelCat">Eliminar ejercicio</button>` : `<span class="muted sm" style="text-align:center">Solo se puede eliminar si no está en ningún día y no tiene historial.</span>`;
@@ -714,8 +777,11 @@ function doMerge(dstId) {
   const src = exMeta(ui.editId), dst = exMeta(dstId);
   if (!src || !dst) return;
   if (!confirm(`¿Fusionar “${src.name}” con “${dst.name}”?\n\nSe queda el nombre “${dst.name}” y el historial de los dos se junta. No se puede deshacer.`)) return;
+  const srcName = src.name;
   mergeExercise(src.id, dst.id); save();
-  toast('Ejercicios fusionados'); ui.editId = dst.id; go('exEdit');
+  ui.mergeAll = false; ui.editId = null;
+  go(ui.editBack || 'catalog');
+  toast(`“${srcName}” se fusionó en “${dst.name}”`);
 }
 
 /* ---------- exportar / respaldo ---------- */
@@ -738,7 +804,7 @@ function exportCsv() {
     });
   });
   const csv = '﻿' + rows.map(r => r.map(c => { const v = String(c); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; }).join(',')).join('\r\n');
-  download(csv, 'text/csv;charset=utf-8', `entrenamientos-${todayISO()}.csv`);
+  download(csv, 'text/csv;charset=utf-8', `${APP_NAME}-entrenos-${todayISO()}.csv`);
 }
 function importFile(file) {
   if (!file) return;
@@ -748,7 +814,7 @@ function importFile(file) {
       const d = fixCurrent(migrate(JSON.parse(rd.result)));
       if (!d) throw new Error('formato');
       if (!confirm('Esto reemplaza los datos de este teléfono con el respaldo. ¿Continuar?')) return;
-      db = d; save(); toast('Respaldo restaurado'); go('home');
+      db = d; fillGroups(); save(); toast('Respaldo restaurado'); go('home');
     } catch (e) { toast('Ese archivo no es un respaldo válido'); }
   };
   rd.readAsText(file);
@@ -823,9 +889,12 @@ const ACT = {
     if (!addCatToDay(c)) return;
     save(); toast('Agregado: ' + c.n); rerender();
   },
-  exEdit: d => { ui.editId = d.id; ui.editBack = d.back || 'catalog'; go('exEdit'); },
+  exEdit: d => { ui.editId = d.id; ui.editBack = d.back || 'catalog'; ui.mergeAll = false; go('exEdit'); },
   exMerge: d => doMerge(d.id),
-  exMergeSel: () => { const s = $('#mergeSel'); if (s && s.value) doMerge(s.value); },
+  exMergeSel: () => { const s = $('#mergeSel'); if (!s || !s.value) return toast('Primero elige un ejercicio de la lista'); doMerge(s.value); },
+  exGroup: d => { const e = exMeta(ui.editId); if (!e) return; e.group = d.v; save(); rerender(); toast('Grupo: ' + d.v); },
+  exNotDup: d => { const k = pairKey(ui.editId, d.id); if (!db.settings.notDup.includes(k)) db.settings.notDup.push(k); save(); rerender(); toast('Listo, ya no se sugiere'); },
+  mergeAll: () => { ui.mergeAll = !ui.mergeAll; rerender(); },
   exDelCat: () => {
     const e = exMeta(ui.editId);
     if (!confirm(`¿Eliminar “${e.name}”?`)) return;
@@ -845,9 +914,9 @@ const ACT = {
     const inp = $('#newex'), v = inp ? inp.value.trim() : '';
     if (!v) return toast('Escribe el nombre del ejercicio');
     const r = routine(ui.planId);
-    let e = db.exercises.find(x => normKey(x.name) === normKey(v));
+    let e = ownByName(v);
     if (e && r.exercises.some(x => x.id === e.id)) return toast('Ese ejercicio ya está en este día');
-    if (!e) { e = { id: uid(), name: v, unit: 'kg' }; db.exercises.push(e); toast('Ejercicio nuevo creado'); }
+    if (!e) { e = { id: uid(), name: v, unit: 'kg', group: guessGroup(v) }; db.exercises.push(e); toast(`Ejercicio nuevo creado · ${e.group}`); }
     else toast('Ya existía: se usó “' + e.name + '”');
     r.exercises.push({ id: e.id, warmups: 1 }); save(); rerender();
   },
@@ -870,7 +939,7 @@ const ACT = {
 
   setNum: d => { db.settings[d.k] = +d.n; save(); rerender(); },
   exportCsv,
-  backup: () => download(JSON.stringify(db, null, 1), 'application/json', `respaldo-heavyduty-${todayISO()}.json`),
+  backup: () => download(JSON.stringify(db, null, 1), 'application/json', `${APP_NAME}-respaldo-${todayISO()}.json`),
   importBtn: () => $('#importFile').click(),
   reset: () => {
     if (confirm('¿Borrar TODOS los datos? Descarga un respaldo antes.') && confirm('¿Seguro? Esto no se puede deshacer.')) { db = seed(); save(); go('home'); }
@@ -919,6 +988,7 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') { wake(ui.view === 'train'); tick(); }
 });
 
+fillGroups();
 if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
 if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(() => {});
 render();
