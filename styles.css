@@ -135,3 +135,14 @@ svg { flex-shrink: 0; }
 .pick-plus { font-size: 24px; font-weight: 700; color: var(--acc-t); flex-shrink: 0; }
 .hl-txt { color: var(--acc-t); font-weight: 600; }
 select.inp { appearance: auto; }
+
+/* --- v6: cronómetro con iniciar/pausar y catálogo --- */
+.tbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; background: var(--card); border-radius: 14px; padding: 8px 10px 8px 14px; }
+.tbar .btn { height: 44px; }
+.tbar.paused { background: var(--warm-bg); border: 1px solid var(--warm-bd); }
+.clock.idle .num, .clock.pause .num { color: var(--mu); }
+.hscroll { display: flex; gap: 8px; overflow-x: auto; flex-wrap: nowrap; padding-bottom: 2px; scrollbar-width: none; }
+.hscroll::-webkit-scrollbar { display: none; }
+.hscroll .chip { flex-shrink: 0; height: 40px; }
+.pick:disabled { opacity: 1; cursor: default; }
+.main > * { flex-shrink: 0; }

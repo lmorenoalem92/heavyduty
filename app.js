@@ -17,6 +17,7 @@ const ICON = {
   up: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 15l6-6 6 6"/></svg>',
   down: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>',
   trash: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></svg>',
+  pause: '<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>',
   chev: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>',
   list: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h10"/></svg>',
   chart: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19l5-6 4 3 7-9"/></svg>',
@@ -108,8 +109,13 @@ function migrate(d) {
   d.settings = Object.assign({}, DEF_SETTINGS, d.settings);
   return d;
 }
+function fixCurrent(d) {
+  const c = d && d.current;
+  if (c && c.acc === undefined) { c.acc = 0; c.runAt = c.startedAt || null; c.firstAt = c.startedAt || null; delete c.startedAt; }
+  return d;
+}
 function load() {
-  try { const raw = localStorage.getItem(KEY); if (raw) { const d = migrate(JSON.parse(raw)); if (d) return d; } } catch (e) { /* sin acceso */ }
+  try { const raw = localStorage.getItem(KEY); if (raw) { const d = fixCurrent(migrate(JSON.parse(raw))); if (d) return d; } } catch (e) { /* sin acceso */ }
   return seed();
 }
 function save() {
@@ -221,8 +227,42 @@ function exResultsHtml(q) {
   const exact = nq && db.exercises.some(e => normKey(e.name) === normKey(q));
   let h = `<span class="muted sm">${nq ? (list.length ? 'Coincidencias en tus ejercicios' : 'No hay coincidencias') : (list.length ? 'Tus ejercicios más usados' : '')}</span>`;
   h += list.map(e => `<button class="pick" data-a="exPick" data-id="${e.id}"><span class="col"><span class="pick-n">${esc(e.name)}</span><span class="muted sm">${esc(usageText(e.id))}</span></span><span class="pick-plus">+</span></button>`).join('');
-  if (nq && !exact) h += `<button class="btn dashed" data-a="exAdd">+ Crear “${esc(q.trim())}” como ejercicio nuevo</button>`;
+  const have = new Set(db.exercises.map(e => normKey(e.name)));
+  const cm = nq ? CATALOGO.filter(c => !have.has(normKey(c.n)) && normSearch(c.n).includes(nq)).slice(0, 6) : [];
+  if (cm.length) h += `<span class="muted sm">Del catálogo</span>` + cm.map(c => catRow(c, false)).join('');
+  const catExact = nq && CATALOGO.some(c => normKey(c.n) === normKey(q));
+  if (nq && !exact && !catExact) h += `<button class="btn dashed" data-a="exAdd">+ Crear “${esc(q.trim())}” como ejercicio nuevo</button>`;
   return h;
+}
+/* ---------- catálogo de ejercicios del gimnasio (catalogo.js) ---------- */
+const CAT_GROUPS = ['Pecho', 'Espalda', 'Hombro', 'Bíceps', 'Tríceps', 'Pierna', 'Core'];
+function addCatToDay(c) {
+  const r = routine(ui.planId); if (!r) return false;
+  let e = db.exercises.find(x => normKey(x.name) === normKey(c.n));
+  if (e && r.exercises.some(x => x.id === e.id)) { toast('Ese ejercicio ya está en este día'); return false; }
+  if (!e) { e = { id: uid(), name: c.n, unit: catUnit(c.e), group: c.g, equip: c.e }; db.exercises.push(e); }
+  r.exercises.push({ id: e.id, warmups: 1 });
+  return true;
+}
+function catRow(c, inDay) {
+  return `<button class="pick" data-a="useCat" data-n="${esc(c.n)}" ${inDay ? 'disabled' : ''}><span class="col"><span class="pick-n">${esc(c.n)}</span><span class="muted sm">${esc(c.g)} · ${esc(c.e)}</span></span>${inDay ? '<span class="tag">En el día ✓</span>' : '<span class="pick-plus">+</span>'}</button>`;
+}
+function catViewBody() {
+  const f = ui.cf, r = routine(ui.planId), q = normSearch((f.q || '').trim());
+  const dayNames = new Set((r ? r.exercises : []).map(x => normKey(findExName(x.id))));
+  const list = CATALOGO.filter(c => (f.g === 'Todos' || c.g === f.g) && (f.e === 'Todo' || c.e === f.e) && (!q || normSearch(c.n).includes(q)));
+  if (!list.length) return `<div class="card muted">Ningún ejercicio del catálogo coincide. Puedes crearlo tú desde Planear día.</div>`;
+  return `<span class="muted sm">${list.length} ejercicios</span><div class="col" style="gap:8px">${list.map(c => catRow(c, dayNames.has(normKey(c.n)))).join('')}</div>`;
+}
+function vCatView() {
+  const r = routine(ui.planId);
+  if (!r) { ui.view = 'home'; return vHome(); }
+  const f = ui.cf;
+  const b = `<input id="catq2" class="inp" placeholder="Buscar en el catálogo" value="${esc(f.q || '')}" aria-label="Buscar en el catálogo" autocomplete="off">
+  <div class="hscroll" role="group" aria-label="Grupo muscular">${['Todos'].concat(CAT_GROUPS).map(g => `<button class="chip ${f.g === g ? 'on' : ''}" data-a="cfG" data-v="${g}" aria-pressed="${f.g === g}">${g}</button>`).join('')}</div>
+  <div class="hscroll" role="group" aria-label="Equipo">${['Todo'].concat(EQUIPOS).map(e => `<button class="chip ${f.e === e ? 'on' : ''}" data-a="cfE" data-v="${e}" aria-pressed="${f.e === e}">${e}</button>`).join('')}</div>
+  <div id="catBody" class="col" style="gap:10px">${catViewBody()}</div>`;
+  return screen({ title: 'Catálogo', sub: 'Agregar a ' + r.name, back: 'plan', body: b, foot: `<button class="btn acc lg full" data-a="go" data-v="plan">Listo</button>` });
 }
 const ejs = n => n + (n === 1 ? ' ejercicio' : ' ejercicios');
 const cur = () => db.current.entries[db.current.idx];
@@ -233,7 +273,7 @@ function startTraining(rid) {
   if (!r || !r.exercises.length) { toast('Primero agrega ejercicios a este día'); ui.planId = rid; go('plan'); return; }
   const p = activePhase();
   db.current = {
-    routineId: r.id, routineName: r.name, programId: p ? p.id : null, idx: 0, startedAt: Date.now(),
+    routineId: r.id, routineName: r.name, programId: p ? p.id : null, idx: 0, acc: 0, runAt: null, firstAt: null,
     entries: r.exercises.map(ex => {
       const meta = exMeta(ex.id) || { name: 'Ejercicio', unit: 'kg' };
       const last = lastEntry(ex.id);
@@ -258,19 +298,20 @@ function finishTraining() {
     if (!confirm('No registraste ninguna serie efectiva. ¿Cerrar el entreno sin guardar?')) return;
   } else {
     const end = Date.now();
-    let dur = Math.round((end - c.startedAt) / 1000);
-    if (dur > 4 * 3600 && !confirm(`El cronómetro marca ${fmtDur(dur)}. ¿Guardar esa duración?\n\nSi eliges Cancelar, el entreno se guarda sin duración.`)) dur = null;
+    let dur = Math.round(tElapsed(c) / 1000) || null;
+    const started = c.firstAt || end;
+    if (dur && dur > 4 * 3600 && !confirm(`El cronómetro marca ${fmtDur(dur)}. ¿Guardar esa duración?\n\nSi eliges Cancelar, el entreno se guarda sin duración.`)) dur = null;
     const prev = lastSessionOf(c.routineId);
     const prs = [], firsts = [];
     done.forEach(e => { const l = lastEntry(e.exerciseId); if (!l) firsts.push(e.name); else if (beats(e.eff, lastEffIn(l, unitOf(e)))) prs.push(e.name); });
     db.sessions.push({
-      id: uid(), date: todayISO(), at: end, startedAt: c.startedAt, endedAt: end, durationSec: dur,
+      id: uid(), date: todayISO(), at: end, startedAt: started, endedAt: end, durationSec: dur,
       programId: c.programId, routineId: c.routineId, routineName: c.routineName,
       entries: done.map(e => ({ exerciseId: e.exerciseId, name: e.name, unit: unitOf(e), warm: e.warm.map(w => ({ w: w.w, r: w.r })), eff: { w: e.eff.w, r: e.eff.r, tech: e.eff.tech } }))
     });
     ui.summary = {
       routineName: c.routineName, total: done.length, of: c.entries.length, prs, firsts,
-      dur, startedAt: c.startedAt, endedAt: end, prevDur: prev && prev.durationSec,
+      dur, startedAt: started, endedAt: end, prevDur: prev && prev.durationSec,
       phaseName: (phaseById(c.programId) || {}).name || ''
     };
   }
@@ -289,7 +330,20 @@ function compare(eff, last, u) {
 }
 
 /* ---------- cronómetro y descanso ---------- */
-const elapsedText = () => db.current ? fmtDur(Math.max(0, Math.floor((Date.now() - db.current.startedAt) / 1000))) : '0:00';
+// Cronómetro: no arranca solo. Empieza al marcar la primera serie o con "Iniciar"; se puede pausar y reiniciar.
+const tElapsed = c => !c ? 0 : Math.max(0, (c.acc || 0) + (c.runAt ? Date.now() - c.runAt : 0));
+const tState = c => !c ? 'idle' : c.runAt ? 'run' : (c.acc ? 'pause' : 'idle');
+function tStart() { const c = db.current; if (!c || c.runAt) return; c.runAt = Date.now(); if (!c.firstAt) c.firstAt = c.runAt; }
+function tPause() { const c = db.current; if (!c || !c.runAt) return; c.acc = tElapsed(c); c.runAt = null; }
+function tReset() { const c = db.current; if (!c) return; c.acc = 0; c.runAt = null; c.firstAt = null; }
+const elapsedText = () => fmtDur(Math.floor(tElapsed(db.current) / 1000));
+const anyDone = c => c.entries.some(e => e.eff.done || e.warm.some(w => w.done));
+function timerBar() {
+  const st = tState(db.current);
+  if (st === 'idle') return `<div class="tbar"><span class="muted sm" style="flex:1">El cronómetro arranca al marcar tu primera serie.</span><button class="btn ghost" data-a="tStart">${ICON.play} Iniciar</button></div>`;
+  if (st === 'run') return `<div class="tbar"><button class="btn ghost" data-a="tPause">${ICON.pause} Pausar</button><button class="btn text" data-a="tReset">Reiniciar</button></div>`;
+  return `<div class="tbar paused"><span class="sm" style="flex:1;font-weight:600">Cronómetro en pausa</span><button class="btn acc" data-a="tStart">${ICON.play} Reanudar</button><button class="btn text" data-a="tReset">Reiniciar</button></div>`;
+}
 function restText() {
   const left = ui.rest ? Math.max(0, Math.ceil((ui.rest.end - Date.now()) / 1000)) : 0;
   return Math.floor(left / 60) + ':' + pad2(left % 60);
@@ -326,9 +380,10 @@ function go(v) { ui.view = v; ui.keep = false; render(); }
 function rerender() { ui.keep = true; render(); }
 function render() {
   const m0 = $('.main'); const top = ui.keep && m0 ? m0.scrollTop : 0;
-  const V = { home: vHome, train: vTrain, plan: vPlan, programa: vPrograma, phase: vPhase, progress: vProgress, settings: vSettings, summary: vSummary, catalog: vCatalog, exEdit: vExEdit };
+  const V = { home: vHome, train: vTrain, plan: vPlan, programa: vPrograma, phase: vPhase, progress: vProgress, settings: vSettings, summary: vSummary, catalog: vCatalog, exEdit: vExEdit, catview: vCatView };
   $('#app').innerHTML = (V[ui.view] || vHome)();
   const m = $('.main'); if (m) m.scrollTop = top;
+  document.querySelectorAll('.hscroll').forEach(h => { const on = h.querySelector('.chip.on'); if (on) h.scrollLeft = Math.max(0, on.offsetLeft - h.offsetLeft - (h.clientWidth - on.offsetWidth) / 2); });
   ui.keep = false;
   ensureTick();
   wake(ui.view === 'train');
@@ -356,7 +411,7 @@ const dayRow = (r, label, extra) => `<div class="card rrow"><div class="col">${l
 function vHome() {
   const p = activePhase();
   let b = '';
-  if (db.current) b += `<button class="card resume" data-a="go" data-v="train"><span class="eyebrow hl">Entreno en curso · ${elapsedText()}</span><span class="big">${esc(db.current.routineName)}</span><span class="muted">Toca para continuar</span></button>`;
+  if (db.current) b += `<button class="card resume" data-a="go" data-v="train"><span class="eyebrow hl">Entreno en curso · ${tState(db.current) === 'idle' ? 'sin iniciar' : elapsedText() + (tState(db.current) === 'pause' ? ' · en pausa' : '')}</span><span class="big">${esc(db.current.routineName)}</span><span class="muted">Toca para continuar</span></button>`;
   if (p) {
     const st = stats(p);
     b += `<button class="card" data-a="go" data-v="programa">
@@ -398,6 +453,7 @@ function vTrain() {
   const topHit = ex.repMax && e.eff.r >= ex.repMax;
   const dn = dayNum(c.routineId);
   let b = `<div class="segs" style="grid-template-columns:repeat(${n},1fr)">${c.entries.map((x, i) => `<i class="${i === c.idx ? 'cur' : x.eff.done ? 'ok' : ''}"></i>`).join('')}</div>
+  ${timerBar()}
   <h2 class="exname">${esc(findExName(e.exerciseId))}</h2>
   ${range || ex.notes ? `<div class="card notes">${range ? `<span class="eyebrow hl">Objetivo · ${range}</span>` : ''}${ex.notes ? `<span class="note-t">${esc(ex.notes)}</span>` : ''}</div>` : ''}
   <div class="card row-sb" style="flex-direction:row"><div class="col"><span class="eyebrow">La vez pasada${last ? ' · ' + fdate(last.date) : ''}</span><span class="num md">${last ? `${fmt(last.eff.w)} ${unitOf(last)} × ${last.eff.r} reps` : 'Sin registro'}</span>${last && last.eff.w > 0 ? `<span class="muted sm">≈ ${fmt(r1(conv(last.eff.w, unitOf(last), other(unitOf(last)))))} ${other(unitOf(last))}</span>` : ''}</div><span class="muted sm">${last && last.eff.tech && last.eff.tech !== 'Normal' ? esc(last.eff.tech) : 'serie al fallo'}</span></div>
@@ -415,8 +471,9 @@ function vTrain() {
   <button class="btn text danger" data-a="discard">Descartar entreno</button>`;
   const lastEx = c.idx === n - 1;
   const foot = `<button class="btn" data-a="prevEx" ${c.idx === 0 ? 'disabled' : ''}>Anterior</button><button class="btn acc" data-a="${lastEx ? 'finish' : 'nextEx'}">${lastEx ? 'Cerrar entreno' : 'Siguiente ejercicio'}</button>`;
-  const right = `<div class="clock" role="timer" aria-label="Tiempo de entrenamiento"><span class="eyebrow">Entreno</span><span class="num" id="clockT">${elapsedText()}</span></div>`;
-  return screen({ title: c.routineName, sub: `${dn ? 'Día ' + dn + ' · ' : ''}ejercicio ${c.idx + 1} de ${n}`, back: 'home', body: b, foot, right });
+  const st = tState(c);
+  const right = `<div class="clock ${st}" role="timer" aria-label="Tiempo de entrenamiento"><span class="eyebrow">${st === 'run' ? 'Entreno' : st === 'pause' ? 'En pausa' : 'Sin iniciar'}</span><span class="num" id="clockT">${elapsedText()}</span></div>`;
+  return screen({ title: c.routineName, sub: `${dn ? 'Día ' + dn + ' · ' : ''}ejercicio ${c.idx + 1} de ${n}`, back: 'home', backA: 'leaveTrain', body: b, foot, right });
 }
 
 function vSummary() {
@@ -458,6 +515,7 @@ function vPlan() {
     : `<div class="card muted">Todavía no hay ejercicios. Agrega el primero abajo.</div>`;
   b += `<div class="card today"><label class="eyebrow hl" for="newex">Agregar ejercicio</label><input id="newex" class="inp" placeholder="Busca o escribe uno nuevo…" enterkeyhint="done" autocomplete="off">
     <div id="exResults" class="col" style="gap:8px">${exResultsHtml('')}</div>
+    <button class="btn ghost" data-a="openCat">Explorar catálogo · ${CATALOGO.length} ejercicios</button>
     <span class="muted sm">Si eliges uno existente, su historial se comparte entre todos los días donde lo uses.</span></div>
   <button class="btn text danger" data-a="delRoutine">Eliminar día</button>`;
   return screen({ title: 'Planear día', sub: r.name, back: ui.planBack || 'home', body: b, foot: `<button class="btn acc lg full" data-a="train" data-id="${r.id}">${ICON.play} Entrenar este día</button>` });
@@ -687,7 +745,7 @@ function importFile(file) {
   const rd = new FileReader();
   rd.onload = () => {
     try {
-      const d = migrate(JSON.parse(rd.result));
+      const d = fixCurrent(migrate(JSON.parse(rd.result)));
       if (!d) throw new Error('formato');
       if (!confirm('Esto reemplaza los datos de este teléfono con el respaldo. ¿Continuar?')) return;
       db = d; save(); toast('Respaldo restaurado'); go('home');
@@ -731,11 +789,19 @@ const ACT = {
     const e = cur(), t = d.s === 'e' ? e.eff : e.warm[+d.s], st = d.f === 'w' ? stepFor(unitOf(e)) : 1;
     t[d.f] = Math.max(0, Math.round((t[d.f] + st * +d.d) * 100) / 100); save(); rerender();
   },
-  toggleWarm: d => { const w = cur().warm[+d.k]; w.done = !w.done; if (w.done) startRest(db.settings.restWarm); save(); rerender(); },
+  toggleWarm: d => { const w = cur().warm[+d.k]; w.done = !w.done; if (w.done) { tStart(); startRest(db.settings.restWarm); } save(); rerender(); },
   addWarm: () => { const e = cur(); e.warm.push({ w: roundTo(e.eff.w * 0.75, stepFor(unitOf(e))), r: 6, done: false }); save(); rerender(); },
   delWarm: () => { cur().warm.length = 1; save(); rerender(); },
   tech: d => { cur().eff.tech = d.t; save(); rerender(); },
-  toggleEff: () => { const e = cur(); e.eff.done = !e.eff.done; if (e.eff.done) startRest(db.settings.restEff); save(); rerender(); },
+  toggleEff: () => { const e = cur(); e.eff.done = !e.eff.done; if (e.eff.done) { tStart(); startRest(db.settings.restEff); } save(); rerender(); },
+  tStart: () => { tStart(); save(); rerender(); },
+  tPause: () => { tPause(); save(); rerender(); },
+  tReset: () => { if (tElapsed(db.current) > 0 && !confirm('¿Reiniciar el cronómetro a 0:00? Tus series registradas se conservan.')) return; tReset(); save(); rerender(); },
+  leaveTrain: () => {
+    const c = db.current;
+    if (c && !anyDone(c) && tElapsed(c) === 0) { db.current = null; stopRest(); save(); toast('No registraste nada: el entreno se cerró sin guardar'); }
+    go('home');
+  },
   prevEx: () => { db.current.idx--; save(); go('train'); },
   nextEx: () => { db.current.idx++; save(); go('train'); },
   finish: finishTraining,
@@ -748,6 +814,14 @@ const ACT = {
     const r = routine(ui.planId);
     if (!r.exercises.some(x => x.id === d.id)) r.exercises.push({ id: d.id, warmups: 1 });
     save(); rerender(); toast('Agregado: ' + findExName(d.id));
+  },
+  openCat: () => { ui.cf = ui.cf || { g: 'Todos', e: 'Todo', q: '' }; go('catview'); },
+  cfG: d => { ui.cf.g = d.v; rerender(); },
+  cfE: d => { ui.cf.e = d.v; rerender(); },
+  useCat: d => {
+    const c = CATALOGO.find(x => x.n === d.n); if (!c) return;
+    if (!addCatToDay(c)) return;
+    save(); toast('Agregado: ' + c.n); rerender();
   },
   exEdit: d => { ui.editId = d.id; ui.editBack = d.back || 'catalog'; go('exEdit'); },
   exMerge: d => doMerge(d.id),
@@ -836,6 +910,7 @@ document.addEventListener('input', ev => {
   const t = ev.target;
   if (t.dataset.f === 'pname') ui.form.name = t.value;
   if (t.id === 'newex') { const c = $('#exResults'); if (c) c.innerHTML = exResultsHtml(t.value); }
+  if (t.id === 'catq2') { ui.cf.q = t.value; const s = $('#catBody'); if (s) s.innerHTML = catViewBody(); }
   if (t.id === 'catq') { const c = $('#catList'); if (c) c.innerHTML = catListHtml(t.value); }
 });
 document.addEventListener('keydown', ev => { if (ev.key === 'Enter' && ev.target.id === 'newex') ACT.exAdd(); });

@@ -1,7 +1,7 @@
 /* Guarda la app en el teléfono para que abra sin internet.
    Al publicar cambios, sube el número de versión (hd-v2, hd-v3...). */
-const V = 'hd-v5';
-const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'manifest.json', 'icon-192.png', 'icon-512.png'];
+const V = 'hd-v6';
+const SHELL = ['./', 'index.html', 'styles.css', 'catalogo.js', 'app.js', 'manifest.json', 'icon-192.png', 'icon-512.png'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(V).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));
