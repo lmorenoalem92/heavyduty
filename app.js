@@ -47,7 +47,7 @@ const fmtDur = sec => { const h = Math.floor(sec / 3600), m = Math.floor(sec % 3
 const fmtMin = sec => Math.round(sec / 60) + ' min';
 const fmtTime = ms => new Date(ms).toLocaleTimeString('es-MX', { hour: 'numeric', minute: '2-digit' });
 
-const APP_NAME = 'HD', APP_VER = 'V8';
+const APP_NAME = 'HD', APP_VER = 'V9';
 const LB = 0.45359237;
 const conv = (w, from, to) => from === to ? w : from === 'lb' ? w * LB : w / LB;
 const other = u => u === 'lb' ? 'kg' : 'lb';
@@ -558,7 +558,8 @@ function vPlan() {
   let b = `<div class="card"><label class="eyebrow" for="rname">Nombre del día</label><input id="rname" class="inp" value="${esc(r.name)}" data-f="rname"></div>
   <span class="eyebrow mt">Ejercicios, en orden</span>`;
   b += r.exercises.length ? r.exercises.map((x, i) => `<div class="card">
-    <div class="row"><span class="badge">${i + 1}</span><span class="col" style="flex:1"><span class="pick-n">${esc(findExName(x.id))}</span><span class="muted sm">${daysUsing(x.id).length > 1 ? 'compartido con ' + esc(daysUsing(x.id).filter(d => d.id !== r.id).map(d => d.name).join(', ')) : sesTxt(sessionsCount(x.id))}</span></span><button class="btn text hl-t" data-a="exEdit" data-id="${x.id}" data-back="plan">Renombrar</button></div>
+    <div class="row"><span class="badge">${i + 1}</span><span class="col" style="flex:1"><span class="pick-n">${esc(findExName(x.id))}</span><span class="muted sm">${sesTxt(sessionsCount(x.id))}</span></span><button class="btn text hl-t" data-a="exEdit" data-id="${x.id}" data-back="plan">Renombrar</button></div>
+    ${daysUsing(x.id).length > 1 ? `<div class="row-sb" style="background:var(--warm-bg);border:1px solid var(--warm-bd);border-radius:12px;padding:6px 6px 6px 12px"><span class="sm" style="color:#F1D9C8">Compartido con ${esc(daysUsing(x.id).filter(d => d.id !== r.id).map(d => d.name).join(', '))}: si lo renombras cambia allá también</span><button class="btn hl-t" style="height:40px;flex-shrink:0" data-a="sepEx" data-i="${i}">Separar</button></div>` : ''}
     <div class="row"><span class="muted sm" style="flex:1">Reps objetivo</span>
       <input class="inp mini" type="number" inputmode="numeric" min="0" placeholder="mín" value="${x.repMin || ''}" data-f="repMin" data-i="${i}" aria-label="Reps mínimas">
       <span class="muted">a</span>
@@ -730,6 +731,8 @@ function vSettings() {
     <span class="eyebrow">Descanso después de la serie efectiva</span>${chips('restEff', [90, 120, 180], ' s')}</div>
   <div class="card"><span class="eyebrow">Tus datos</span><span class="muted sm">Se guardan solo en este teléfono. Haz respaldo de vez en cuando.</span>
     <button class="btn acc" data-a="exportCsv">Exportar a Excel (.csv)</button>
+    <button class="btn" data-a="csvBtn">Cargar Excel corregido</button>
+    <span class="muted sm">Para corregir el historial: exporta, cambia en Excel el ejercicio, día, fecha, peso, reps o unidad, guarda como CSV y cárgalo aquí. No borres ni cambies la columna ID.</span>
     <button class="btn" data-a="backup">Descargar respaldo</button>
     <button class="btn" data-a="importBtn">Restaurar respaldo</button></div>
   <button class="btn text danger" data-a="reset">Borrar todos los datos</button>
@@ -798,18 +801,166 @@ function download(text, type, name) {
 }
 function exportCsv() {
   if (!db.sessions.length) return toast('Todavía no hay entrenos registrados');
-  const rows = [['Fecha', 'Programa', 'Fase', 'Día', 'Ejercicio', 'Serie', 'Peso', 'Unidad', 'Reps', 'Técnica', 'Duración entreno (min)']];
-  db.sessions.forEach(s => {
+  const rows = [CSV_HEAD.slice()];
+  db.sessions.slice().sort((a, b) => (a.date || '').localeCompare(b.date || '')).forEach(s => {
     const pn = (phaseById(s.programId) || {}).name || '';
     const dm = s.durationSec ? Math.round(s.durationSec / 60) : '';
-    s.entries.forEach(e => {
+    const dn = (routine(s.routineId) || {}).name || s.routineName || '';
+    s.entries.forEach((e, i) => {
       const en = findExName(e.exerciseId);
-      (e.warm || []).forEach((w, k) => rows.push([s.date, db.programName || '', pn, s.routineName, en, 'Calentamiento ' + (k + 1), w.w, unitOf(e), w.r, '', dm]));
-      rows.push([s.date, db.programName || '', pn, s.routineName, en, 'Efectiva', e.eff.w, unitOf(e), e.eff.r, e.eff.tech || '', dm]);
+      (e.warm || []).forEach((w, k) => rows.push([s.date, db.programName || '', pn, dn, en, 'Calentamiento ' + (k + 1), w.w, unitOf(e), w.r, '', dm, `HD|${s.id}|${i}|C${k}`]));
+      rows.push([s.date, db.programName || '', pn, dn, en, 'Efectiva', e.eff.w, unitOf(e), e.eff.r, e.eff.tech || '', dm, `HD|${s.id}|${i}|E`]);
     });
   });
   const csv = '﻿' + rows.map(r => r.map(c => { const v = String(c); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; }).join(',')).join('\r\n');
   download(csv, 'text/csv;charset=utf-8', `${APP_NAME}-entrenos-${todayISO()}.csv`);
+}
+const CSV_HEAD = ['Fecha', 'Programa', 'Fase', 'Día', 'Ejercicio', 'Serie', 'Peso', 'Unidad', 'Reps', 'Técnica', 'Duración entreno (min)', 'ID (no modificar)'];
+function parseCsv(text) {
+  text = text.replace(/^\uFEFF/, '');
+  const first = text.split(/\r?\n/)[0] || '';
+  const sep = (first.split(';').length > first.split(',').length) ? ';' : ',';
+  const rows = []; let row = [], f = '', q = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (q) { if (c === '"') { if (text[i + 1] === '"') { f += '"'; i++; } else q = false; } else f += c; }
+    else if (c === '"') q = true;
+    else if (c === sep) { row.push(f); f = ''; }
+    else if (c === '\n' || c === '\r') { if (c === '\r' && text[i + 1] === '\n') i++; row.push(f); rows.push(row); row = []; f = ''; }
+    else f += c;
+  }
+  if (f !== '' || row.length) { row.push(f); rows.push(row); }
+  return { rows: rows.filter(r => r.some(x => String(x).trim() !== '')), sep };
+}
+const csvNum = v => { const t = String(v == null ? '' : v).trim().replace(/\s/g, ''); if (t === '') return null; const n = parseFloat(t.replace(',', '.')); return isFinite(n) ? n : null; };
+function csvDate(v) {
+  const t = String(v || '').trim(); let m;
+  if ((m = t.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/))) return `${m[1]}-${pad2(+m[2])}-${pad2(+m[3])}`;
+  if ((m = t.match(/^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{2,4})/))) { const y = m[3].length === 2 ? '20' + m[3] : m[3]; return `${y}-${pad2(+m[2])}-${pad2(+m[1])}`; }
+  return null;
+}
+function routineByName(name) { const k = normKey(name); return db.routines.find(r => normKey(r.name) === k) || null; }
+// Lee el Excel corregido y arma la lista de cambios, sin aplicarlos todavía
+function planCsvImport(text) {
+  const { rows } = parseCsv(text);
+  if (!rows.length) throw new Error('El archivo está vacío');
+  const head = rows[0].map(h => normKey(h));
+  const col = name => head.indexOf(normKey(name));
+  const ci = { date: col('Fecha'), day: col('Día'), ex: col('Ejercicio'), set: col('Serie'), w: col('Peso'), u: col('Unidad'), r: col('Reps'), t: col('Técnica'), id: head.findIndex(h => h.startsWith('id')) };
+  if (ci.id < 0 || ci.ex < 0) throw new Error('No encuentro la columna “ID (no modificar)”. Usa un archivo exportado con HD V9 o más nueva.');
+  const ses = {}; db.sessions.forEach(x => ses[x.id] = x);
+  const P = { rows: 0, skipped: 0, sets: [], entries: {}, sessions: {}, newEx: new Set(), newDays: new Set() };
+  rows.slice(1).forEach(r => {
+    const id = String(r[ci.id] || '').trim().split('|');
+    if (id[0] !== 'HD' || !ses[id[1]] || !ses[id[1]].entries[+id[2]]) { P.skipped++; return; }
+    const s = ses[id[1]], ei = +id[2], e = s.entries[ei], k = id[3];
+    const tgt = k === 'E' ? e.eff : (e.warm || [])[+String(k).slice(1)];
+    if (!tgt) { P.skipped++; return; }
+    P.rows++;
+    const g = v => ci[v] >= 0 ? String(r[ci[v]] == null ? '' : r[ci[v]]).trim() : '';
+    const w = csvNum(g('w')), rp = csvNum(g('r'));
+    if (w != null && w !== tgt.w) P.sets.push({ tgt, f: 'w', v: w });
+    if (rp != null && Math.round(rp) !== tgt.r) P.sets.push({ tgt, f: 'r', v: Math.round(rp) });
+    if (k === 'E' && ci.t >= 0 && g('t') && g('t') !== (tgt.tech || '')) P.sets.push({ tgt, f: 'tech', v: g('t') });
+    const ek = s.id + '|' + ei, en = P.entries[ek] || (P.entries[ek] = { s, e, name: null, unit: null, uE: null, uW: null });
+    const nm = g('ex'), u = g('u').toLowerCase();
+    if (nm && normKey(nm) !== normKey(findExName(e.exerciseId)) && (k === 'E' || !en.name)) en.name = nm;
+    if (u === 'kg' || u === 'lb') { if (k === 'E') en.uE = u; else if (!en.uW || u !== unitOf(e)) en.uW = u; }
+    const sx = P.sessions[s.id] || (P.sessions[s.id] = { s, day: null, date: null });
+    const dn = g('day'), cur = (routine(s.routineId) || {}).name || s.routineName || '';
+    if (dn && normKey(dn) !== normKey(cur) && !sx.day) sx.day = dn;
+    const dt = ci.date >= 0 ? csvDate(g('date')) : null;
+    if (dt && dt !== s.date && !sx.date) sx.date = dt;
+  });
+  Object.values(P.entries).forEach(x => { const u = x.uE || x.uW; x.unit = u && u !== unitOf(x.e) ? u : null; if (x.name && !ownByName(x.name)) P.newEx.add(x.name.trim()); });
+  Object.values(P.sessions).forEach(x => { if (x.day && !routineByName(x.day)) P.newDays.add(x.day.trim()); });
+  P.exCount = Object.values(P.entries).filter(x => x.name).length;
+  P.unitCount = Object.values(P.entries).filter(x => x.unit).length;
+  P.dayCount = Object.values(P.sessions).filter(x => x.day).length;
+  P.dateCount = Object.values(P.sessions).filter(x => x.date).length;
+  P.total = P.sets.length + P.exCount + P.unitCount + P.dayCount + P.dateCount;
+  return P;
+}
+function applyCsvImport(P) {
+  P.sets.forEach(c => { c.tgt[c.f] = c.v; });
+  Object.values(P.entries).forEach(x => { if (x.unit) x.e.unit = x.unit; });
+  // días primero (crea los que no existan y los agrega a su fase)
+  Object.values(P.sessions).forEach(x => {
+    if (x.date) x.s.date = x.date;
+    if (!x.day) return;
+    let r = routineByName(x.day);
+    if (!r) {
+      r = { id: uid(), name: x.day.trim(), exercises: [], fromCsv: true }; db.routines.push(r);
+      const ph = phaseById(x.s.programId) || activePhase(); if (ph && !ph.routineIds.includes(r.id)) ph.routineIds.push(r.id);
+    }
+    x.s.routineId = r.id; x.s.routineName = r.name;
+  });
+  // ejercicios: reasigna y, si un día entero cambió de ejercicio, cambia también su plan
+  const moves = {};
+  Object.values(P.entries).forEach(x => {
+    if (!x.name) return;
+    let dst = ownByName(x.name);
+    if (!dst) { dst = { id: uid(), name: x.name.trim(), unit: x.e.unit || unitOf(exMeta(x.e.exerciseId)), group: groupOf(exMeta(x.e.exerciseId)) !== 'Otro' ? groupOf(exMeta(x.e.exerciseId)) : guessGroup(x.name) }; db.exercises.push(dst); }
+    const key = x.s.routineId + '|' + x.e.exerciseId + '|' + dst.id;
+    (moves[key] = moves[key] || { rid: x.s.routineId, from: x.e.exerciseId, to: dst.id }); x.e.exerciseId = dst.id;
+  });
+  // días nuevos: su plan se arma con los ejercicios de los entrenos que se movieron ahí
+  db.routines.filter(r => r.fromCsv).forEach(r => {
+    delete r.fromCsv;
+    db.sessions.filter(s => s.routineId === r.id).forEach(s => s.entries.forEach(e => { if (!r.exercises.some(x => x.id === e.exerciseId)) r.exercises.push({ id: e.exerciseId, warmups: Math.max(1, Math.min(2, (e.warm || []).length || 1)) }); }));
+  });
+  let planSwaps = 0;
+  Object.values(moves).forEach(m => {
+    const r = routine(m.rid); if (!r) return;
+    const stillOld = db.sessions.some(s => s.routineId === m.rid && s.entries.some(e => e.exerciseId === m.from));
+    const slot = r.exercises.find(x => x.id === m.from);
+    if (slot && !stillOld && !r.exercises.some(x => x.id === m.to)) { slot.id = m.to; planSwaps++; }
+  });
+  return planSwaps;
+}
+function importCsvFile(file) {
+  if (!file) return;
+  const rd = new FileReader();
+  rd.onload = () => {
+    let text = new TextDecoder('utf-8').decode(rd.result);
+    if (text.includes('\uFFFD')) { try { text = new TextDecoder('windows-1252').decode(rd.result); } catch (e) {} }
+    let P;
+    try { P = planCsvImport(text); } catch (e) { return toast(e.message || 'No pude leer ese archivo'); }
+    if (!P.total) return toast(P.rows ? 'No encontré cambios en el archivo' : 'Ese archivo no tiene registros de HD');
+    const lines = [];
+    if (P.exCount) lines.push(`• ${P.exCount} ejercicio(s) cambiados de nombre o reasignados`);
+    if (P.sets.length) lines.push(`• ${P.sets.length} dato(s) de peso, reps o técnica`);
+    if (P.unitCount) lines.push(`• ${P.unitCount} cambio(s) de unidad`);
+    if (P.dayCount) lines.push(`• ${P.dayCount} entreno(s) movidos a otro día`);
+    if (P.dateCount) lines.push(`• ${P.dateCount} fecha(s)`);
+    if (P.newEx.size) lines.push(`\nEjercicios nuevos: ${[...P.newEx].join(', ')}`);
+    if (P.newDays.size) lines.push(`Días nuevos: ${[...P.newDays].join(', ')}`);
+    if (P.skipped) lines.push(`\n(${P.skipped} fila(s) sin ID válido se ignoran)`);
+    if (!confirm(`Cambios encontrados:\n${lines.join('\n')}\n\nAntes de aplicar se descarga un respaldo automático. ¿Aplicar?`)) return;
+    download(JSON.stringify(db, null, 1), 'application/json', `${APP_NAME}-respaldo-antes-de-excel-${todayISO()}.json`);
+    const swaps = applyCsvImport(P); fillGroups(); save();
+    go('settings'); toast(`Listo: ${P.total} cambio(s) aplicados${swaps ? ` · ${swaps} día(s) actualizados` : ''}`);
+  };
+  rd.readAsArrayBuffer(file);
+}
+function separateExercise(i) {
+  const r = routine(ui.planId); if (!r) return;
+  const slot = r.exercises[i], old = exMeta(slot.id); if (!old) return;
+  const others = daysUsing(old.id).filter(d => d.id !== r.id);
+  const mine = db.sessions.filter(s => s.routineId === r.id).reduce((a, s) => a + s.entries.filter(e => e.exerciseId === old.id).length, 0);
+  const v = prompt(`¿Cómo se llama el ejercicio de ${r.name}?\n\n${others.map(d => d.name).join(', ')} se queda con “${old.name}”. Los ${mine} registro(s) que hiciste en ${r.name} pasan al nuevo.`, old.name + ' (' + r.name + ')');
+  if (v === null) return;
+  const name = v.trim();
+  if (!name) return toast('Escribe un nombre');
+  if (normKey(name) === normKey(old.name)) return toast('Usa un nombre distinto al de ' + others.map(d => d.name).join(', '));
+  let dst = ownByName(name);
+  if (dst && r.exercises.some(x => x.id === dst.id)) return toast(`“${dst.name}” ya está en este día`);
+  if (dst && !confirm(`Ya tienes “${dst.name}”. ¿Usar ese para ${r.name}? Su historial se juntará con estos ${mine} registro(s).`)) return;
+  if (!dst) { dst = { id: uid(), name, unit: unitOf(old), group: groupOf(old) }; db.exercises.push(dst); }
+  slot.id = dst.id;
+  db.sessions.forEach(s => { if (s.routineId === r.id) s.entries.forEach(e => { if (e.exerciseId === old.id) e.exerciseId = dst.id; }); });
+  if (db.current && db.current.routineId === r.id) db.current.entries.forEach(e => { if (e.exerciseId === old.id) e.exerciseId = dst.id; });
+  save(); rerender(); toast(`Separado: “${dst.name}” solo en ${r.name} · ${mine} registro(s)`);
 }
 function importFile(file) {
   if (!file) return;
@@ -948,6 +1099,8 @@ const ACT = {
   exportCsv,
   backup: () => download(JSON.stringify(db, null, 1), 'application/json', `${APP_NAME}-respaldo-${todayISO()}.json`),
   importBtn: () => $('#importFile').click(),
+  csvBtn: () => $('#csvFile').click(),
+  sepEx: d => separateExercise(+d.i),
   reset: () => {
     if (confirm('¿Borrar TODOS los datos? Descarga un respaldo antes.') && confirm('¿Seguro? Esto no se puede deshacer.')) { db = seed(); save(); go('home'); }
   }
@@ -962,6 +1115,7 @@ document.addEventListener('click', ev => {
 document.addEventListener('change', ev => {
   const t = ev.target, f = t.dataset.f;
   if (t.id === 'importFile') { importFile(t.files[0]); t.value = ''; return; }
+  if (t.id === 'csvFile') { importCsvFile(t.files[0]); t.value = ''; return; }
   if (ui.view === 'train' && t.dataset.s !== undefined) {
     const e = cur(), tg = t.dataset.s === 'e' ? e.eff : e.warm[+t.dataset.s];
     tg[f] = Math.max(0, num(t.value, tg[f])); if (f === 'r') tg.r = Math.round(tg.r);
