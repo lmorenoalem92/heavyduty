@@ -47,7 +47,7 @@ const fmtDur = sec => { const h = Math.floor(sec / 3600), m = Math.floor(sec % 3
 const fmtMin = sec => Math.round(sec / 60) + ' min';
 const fmtTime = ms => new Date(ms).toLocaleTimeString('es-MX', { hour: 'numeric', minute: '2-digit' });
 
-const APP_NAME = 'HD', APP_VER = 'V7';
+const APP_NAME = 'HD', APP_VER = 'V8';
 const LB = 0.45359237;
 const conv = (w, from, to) => from === to ? w : from === 'lb' ? w * LB : w / LB;
 const other = u => u === 'lb' ? 'kg' : 'lb';
@@ -201,7 +201,8 @@ function usageText(id) {
 /* ---------- grupo muscular y posibles duplicados (v7) ---------- */
 const GROUPS = ['Pecho', 'Espalda', 'Hombro', 'Bíceps', 'Tríceps', 'Pierna', 'Core', 'Otro'];
 const GROUP_RULES = [
-  ['Pierna', /femoral|pierna|prensa|sentadilla|pantorrilla|gemelo|desplante|zancada|hip ?thrust|glute|aductor|abductor|rumano|cuadricep|extension de rodilla|hack|bulgara/],
+  ['Hombro', /pec ?deck invers|apertura\w* invers|invers\w* .*apertura|pajaro|reverse fly/],
+  ['Pierna', /femoral|pierna|prensa|sentadilla|pantorrilla|gemelo|desplante|zancada|hip ?thrust|glute|aductor|abductor|rumano|rigida|cuadricep|extension de rodilla|hack|bulgara/],
   ['Tríceps', /tricep|fondo|frances|patada|rompecraneo|copa/],
   ['Hombro', /jalon a la cara|face ?pull|lateral|posterior|militar|hombro|deltoide|arnold|frontal|menton|press de hombro|pajaro/],
   ['Espalda', /jalon|remo|dominada|peso muerto|espalda|hiperextension|encogimiento|pull ?over con polea|dorsal/],
@@ -285,7 +286,12 @@ function exResultsHtml(q) {
   const cm = nq ? CATALOGO.filter(c => !ownByName(c.n) && normSearch(c.n).includes(nq)).slice(0, 6) : [];
   if (cm.length) h += `<span class="muted sm">Del catálogo</span>` + cm.map(c => catRow(c, false)).join('');
   const catExact = nq && CATALOGO.some(c => normKey(c.n) === normKey(q));
-  if (nq && !exact && !catExact) h += `<button class="btn dashed" data-a="exAdd">+ Crear “${esc(q.trim())}” como ejercicio nuevo</button>`;
+  if (nq && !exact && !catExact) {
+    const g = ui.ng || guessGroup(q);
+    h += `<div class="card" style="background:var(--card2);gap:8px"><span class="eyebrow">Ejercicio nuevo · ¿qué grupo trabaja?</span>
+      <div class="chips" role="group" aria-label="Grupo muscular">${GROUPS.map(x => `<button class="chip ${g === x ? 'on' : ''}" data-a="ngPick" data-v="${x}" aria-pressed="${g === x}" style="height:40px">${x}</button>`).join('')}</div>
+      <button class="btn acc" data-a="exAdd">+ Crear “${esc(q.trim())}” en ${esc(g)}</button></div>`;
+  }
   return h;
 }
 /* ---------- catálogo de ejercicios del gimnasio (catalogo.js) ---------- */
@@ -717,7 +723,7 @@ function vExercise() {
 function vSettings() {
   const s = db.settings;
   const chips = (k, opts, unit) => `<div class="chips">${opts.map(n => `<button class="chip ${s[k] === n ? 'on' : ''}" data-a="setNum" data-k="${k}" data-n="${n}">${n}${unit}</button>`).join('')}</div>`;
-  const b = `<button class="card rrow" data-a="go" data-v="catalog"><div class="col"><span class="eyebrow">Mis ejercicios</span><span class="rname" style="font-size:16px">${db.exercises.length} ejercicios</span><span class="muted sm">Renombrar, cambiar unidad o fusionar duplicados${duplicatePairs().length ? ` · <span class="hl-txt">${duplicatePairs().length} posible${duplicatePairs().length === 1 ? '' : 's'} duplicado${duplicatePairs().length === 1 ? '' : 's'}</span>` : ''}</span></div>${ICON.chev}</button>
+  const b = `<button class="card rrow" data-a="go" data-v="catalog"><div class="col"><span class="eyebrow">Mis ejercicios</span><span class="rname" style="font-size:16px">${db.exercises.length} ejercicios</span><span class="muted sm">Renombrar, cambiar grupo muscular o unidad</span></div>${ICON.chev}</button>
   <div class="card"><span class="eyebrow">Incremento con −/+ en kg</span>${chips('step', [1, 2.5, 5], ' kg')}
     <span class="eyebrow">Incremento con −/+ en lb</span>${chips('stepLb', [2.5, 5, 10], ' lb')}</div>
   <div class="card"><span class="eyebrow">Descanso después de calentamiento</span>${chips('restWarm', [45, 60, 90], ' s')}
@@ -739,9 +745,9 @@ function catListHtml(q) {
   return list.map(e => `<button class="card rrow" data-a="exEdit" data-id="${e.id}" data-back="catalog"><div class="col"><span class="rname" style="font-size:16px">${esc(e.name)}</span><span class="muted sm">${esc(groupOf(e))} · ${esc(usageText(e.id))}</span></div><span class="row"><span class="badge2 b-gray">${unitOf(e)}</span>${ICON.chev}</span></button>`).join('');
 }
 function vCatalog() {
-  const dups = duplicatePairs();
+  const dups = [];
   let b = `<input id="catq" class="inp" placeholder="Buscar ejercicio…" aria-label="Buscar ejercicio" autocomplete="off">`;
-  if (dups.length) b += `<div class="card notes"><span class="eyebrow hl">Posibles duplicados</span>${dups.slice(0, 4).map(([a, c]) => `<button class="pick" data-a="exEdit" data-id="${a.id}" data-back="catalog"><span class="col"><span class="note-t">“${esc(a.name)}” y “${esc(c.name)}”</span><span class="muted sm">${esc(groupOf(a))} · toca para revisar y fusionar</span></span>${ICON.chev}</button>`).join('')}</div>`;
+  if (false) b += `<div class="card notes"><span class="eyebrow hl">Posibles duplicados</span>${dups.slice(0, 4).map(([a, c]) => `<button class="pick" data-a="exEdit" data-id="${a.id}" data-back="catalog"><span class="col"><span class="note-t">“${esc(a.name)}” y “${esc(c.name)}”</span><span class="muted sm">${esc(groupOf(a))} · toca para revisar y fusionar</span></span>${ICON.chev}</button>`).join('')}</div>`;
   b += `<span class="eyebrow mt">${db.exercises.length} ejercicios</span><div id="catList" class="col" style="gap:10px">${catListHtml('')}</div>`;
   return screen({ title: 'Mis ejercicios', sub: 'Ajustes', back: 'settings', body: b });
 }
@@ -749,8 +755,8 @@ function vExEdit() {
   const e = exMeta(ui.editId);
   if (!e) { ui.view = 'catalog'; return vCatalog(); }
   const ds = daysUsing(e.id), n = sessionsCount(e.id), sim = similarTo(e.id);
-  const g = groupOf(e), all = g === 'Otro' || ui.mergeAll;
-  const others = db.exercises.filter(o => o.id !== e.id && (all || groupOf(o) === g || groupOf(o) === 'Otro')).sort((a, c) => a.name.localeCompare(c.name, 'es'));
+  const g = groupOf(e);
+  const others = db.exercises.filter(o => o.id !== e.id && groupOf(o) === g).sort((a, c) => a.name.localeCompare(c.name, 'es'));
   let b = `<div class="card"><label class="eyebrow" for="catName">Nombre</label><input id="catName" class="inp" value="${esc(e.name)}" data-f="catName">
     <span class="muted sm">El nuevo nombre aparece en todos los días, en el historial y en la exportación a Excel.</span>
     <div class="seg"><span class="muted sm" style="flex:1">Unidad de peso</span>
@@ -758,17 +764,16 @@ function vExEdit() {
       <button class="chip ${unitOf(e) === 'lb' ? 'on' : ''}" data-a="unit" data-id="${e.id}" data-u="lb">lb</button></div>
     <span class="eyebrow mt">Grupo muscular</span>
     <div class="chips" role="group" aria-label="Grupo muscular">${GROUPS.map(x => `<button class="chip ${g === x ? 'on' : ''}" data-a="exGroup" data-v="${x}" aria-pressed="${g === x}">${x}</button>`).join('')}</div>
-    <span class="muted sm">Solo se sugiere fusionar con ejercicios del mismo grupo.</span></div>
+    <span class="muted sm">Si está en el grupo equivocado, tócalo aquí para corregirlo.</span></div>
   ${(e.aliases || []).length ? `<div class="card"><span class="eyebrow">También llamado</span><span class="sm" style="color:#C9C7C2">${esc(e.aliases.join(', '))}</span><span class="muted sm">Nombres que se fusionaron aquí. Si los buscas, te lleva a este ejercicio.</span></div>` : ''}
   <div class="card"><span class="eyebrow">Se usa en</span><span>${ds.length ? esc(ds.map(r => r.name).join(', ')) : 'Ningún día'}</span><span class="muted sm">${n} ${n === 1 ? 'sesión registrada' : 'sesiones registradas'}</span></div>`;
-  {
-    b += `<div class="card"><span class="eyebrow">¿Es el mismo que otro?</span><span class="sm" style="color:#C9C7C2">Fusionar junta los dos en uno solo: el historial se suma y los días quedan apuntando al mismo ejercicio. Se conserva el nombre del ejercicio que elijas.</span>
-      ${sim.map(o => `<div class="col" style="gap:4px"><button class="pick" data-a="exMerge" data-id="${o.id}"><span class="col"><span class="pick-n">Fusionar con “${esc(o.name)}”</span><span class="muted sm">sugerido · ${sesTxt(sessionsCount(o.id))}</span></span>${ICON.chev}</button><button class="btn text" style="height:36px;align-self:flex-end" data-a="exNotDup" data-id="${o.id}">No es el mismo, no sugerir</button></div>`).join('')}
-      <label class="muted sm" for="mergeSel">${sim.length ? 'O elige otro' : 'Elige con cuál fusionarlo'}${all ? '' : ` (solo ${esc(g)})`}</label>
-      ${others.length ? '' : `<span class="sm" style="color:#C9C7C2">No tienes otros ejercicios de ${esc(g)}.</span>`}
-      <select id="mergeSel" class="inp" ${others.length ? '' : 'disabled'}><option value="">Elegir ejercicio…</option>${others.map(o => `<option value="${o.id}">${esc(o.name)}${all && groupOf(o) !== g ? ` · ${esc(groupOf(o))}` : ''}</option>`).join('')}</select>
-      ${g !== 'Otro' ? `<button class="btn text" style="height:36px" data-a="mergeAll">${ui.mergeAll ? 'Mostrar solo ' + esc(g) : 'Mostrar todos los grupos'}</button>` : ''}
-      <button class="btn ghost" data-a="exMergeSel">Fusionar con el seleccionado</button></div>`;
+  if (!ui.mergeOpen) {
+    b += `<button class="btn text" data-a="mergeOpen" style="height:44px">¿Lo diste de alta dos veces? Fusionar</button>`;
+  } else {
+    b += `<div class="card"><div class="row-sb"><span class="eyebrow">Fusionar con otro de ${esc(g)}</span><button class="btn text" style="height:36px;padding:0 4px" data-a="mergeOpen">Cerrar</button></div>
+      <span class="sm" style="color:#C9C7C2">Úsalo solo si es el mismo ejercicio escrito dos veces. El historial se junta y se conserva el nombre del que elijas. No se puede deshacer.</span>
+      ${others.length ? `<select id="mergeSel" class="inp" aria-label="Ejercicio con el que se fusiona"><option value="">Elegir ejercicio…</option>${others.map(o => `<option value="${o.id}">${esc(o.name)}</option>`).join('')}</select>
+      <button class="btn ghost" data-a="exMergeSel">Fusionar con el seleccionado</button>` : `<span class="sm">No tienes otros ejercicios de ${esc(g)}.</span>`}</div>`;
   }
   b += (!ds.length && !n) ? `<button class="btn text danger" data-a="exDelCat">Eliminar ejercicio</button>` : `<span class="muted sm" style="text-align:center">Solo se puede eliminar si no está en ningún día y no tiene historial.</span>`;
   return screen({ title: 'Editar ejercicio', sub: 'Mis ejercicios', back: ui.editBack || 'catalog', body: b });
@@ -779,7 +784,7 @@ function doMerge(dstId) {
   if (!confirm(`¿Fusionar “${src.name}” con “${dst.name}”?\n\nSe queda el nombre “${dst.name}” y el historial de los dos se junta. No se puede deshacer.`)) return;
   const srcName = src.name;
   mergeExercise(src.id, dst.id); save();
-  ui.mergeAll = false; ui.editId = null;
+  ui.mergeOpen = false; ui.editId = null;
   go(ui.editBack || 'catalog');
   toast(`“${srcName}” se fusionó en “${dst.name}”`);
 }
@@ -889,12 +894,13 @@ const ACT = {
     if (!addCatToDay(c)) return;
     save(); toast('Agregado: ' + c.n); rerender();
   },
-  exEdit: d => { ui.editId = d.id; ui.editBack = d.back || 'catalog'; ui.mergeAll = false; go('exEdit'); },
+  exEdit: d => { ui.editId = d.id; ui.editBack = d.back || 'catalog'; ui.mergeOpen = false; go('exEdit'); },
   exMerge: d => doMerge(d.id),
   exMergeSel: () => { const s = $('#mergeSel'); if (!s || !s.value) return toast('Primero elige un ejercicio de la lista'); doMerge(s.value); },
-  exGroup: d => { const e = exMeta(ui.editId); if (!e) return; e.group = d.v; save(); rerender(); toast('Grupo: ' + d.v); },
+  exGroup: d => { const e = exMeta(ui.editId); if (!e) return; e.group = d.v; ui.mergeOpen = false; save(); rerender(); toast('Grupo: ' + d.v); },
   exNotDup: d => { const k = pairKey(ui.editId, d.id); if (!db.settings.notDup.includes(k)) db.settings.notDup.push(k); save(); rerender(); toast('Listo, ya no se sugiere'); },
-  mergeAll: () => { ui.mergeAll = !ui.mergeAll; rerender(); },
+  mergeOpen: () => { ui.mergeOpen = !ui.mergeOpen; rerender(); },
+  ngPick: d => { ui.ng = d.v; const c = $('#exResults'), i = $('#newex'); if (c && i) c.innerHTML = exResultsHtml(i.value); },
   exDelCat: () => {
     const e = exMeta(ui.editId);
     if (!confirm(`¿Eliminar “${e.name}”?`)) return;
@@ -916,8 +922,9 @@ const ACT = {
     const r = routine(ui.planId);
     let e = ownByName(v);
     if (e && r.exercises.some(x => x.id === e.id)) return toast('Ese ejercicio ya está en este día');
-    if (!e) { e = { id: uid(), name: v, unit: 'kg', group: guessGroup(v) }; db.exercises.push(e); toast(`Ejercicio nuevo creado · ${e.group}`); }
+    if (!e) { e = { id: uid(), name: v, unit: 'kg', group: ui.ng || guessGroup(v) }; db.exercises.push(e); toast(`Creado en ${e.group}: ${e.name}`); }
     else toast('Ya existía: se usó “' + e.name + '”');
+    ui.ng = null;
     r.exercises.push({ id: e.id, warmups: 1 }); save(); rerender();
   },
   delRoutine: () => {
@@ -978,7 +985,7 @@ document.addEventListener('change', ev => {
 document.addEventListener('input', ev => {
   const t = ev.target;
   if (t.dataset.f === 'pname') ui.form.name = t.value;
-  if (t.id === 'newex') { const c = $('#exResults'); if (c) c.innerHTML = exResultsHtml(t.value); }
+  if (t.id === 'newex') { if (!t.value.trim()) ui.ng = null; const c = $('#exResults'); if (c) c.innerHTML = exResultsHtml(t.value); }
   if (t.id === 'catq2') { ui.cf.q = t.value; const s = $('#catBody'); if (s) s.innerHTML = catViewBody(); }
   if (t.id === 'catq') { const c = $('#catList'); if (c) c.innerHTML = catListHtml(t.value); }
 });
